@@ -100,6 +100,8 @@ class Server(SQLModel, table=True):
     # Health / sync bookkeeping (updated by the reconcile loop)
     status: SyncStatus = Field(default=SyncStatus.unknown)
     version: Optional[str] = None
+    latest_version: Optional[str] = None      # newest version AdGuard reports
+    update_available: bool = False
     last_seen: Optional[datetime] = None
     last_synced: Optional[datetime] = None
     last_error: Optional[str] = None

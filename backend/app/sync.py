@@ -99,12 +99,12 @@ def desired_upstreams_for_server(session: Session, server: Server) -> list[str]:
         if not _scope_matches(fz, server):
             continue
         domains = [d for d in re.split(r"[,\s]+", fz.domains.strip()) if d]
-        upstreams = [a for a in re.split(r"[,\s\n]+", fz.upstreams.strip()) if a]
+        upstreams = [a for a in re.split(r"[,\s]+", fz.upstreams.strip()) if a]
         if not domains or not upstreams:
             continue
-        prefix = "[/" + "/".join(domains) + "/]"
-        for addr in upstreams:
-            entries.append(prefix + addr)
+        # AdGuard syntax: one entry, space-separated upstreams:
+        #   [/domain1/domain2/]server1 server2 server3
+        entries.append("[/" + "/".join(domains) + "/]" + " ".join(upstreams))
 
     return _dedupe(entries)
 
@@ -120,6 +120,15 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         result.version = status.get("version")
         server.version = result.version
         server.last_seen = datetime.now(timezone.utc)
+
+        # Update-available check (best-effort; uses AdGuard's cached result).
+        try:
+            vinfo = await client.version_check()
+            new_version = (vinfo.get("new_version") or "").strip()
+            server.latest_version = new_version or None
+            server.update_available = bool(new_version) and new_version != (result.version or "")
+        except AdGuardError:
+            pass  # update checks may be disabled; don't fail the sync
 
         current = set(await client.list_rewrites())
         desired_keys = {r.key() for r in desired}

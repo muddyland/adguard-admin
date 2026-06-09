@@ -4,6 +4,7 @@ import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
 import ZonePicker from '../components/ZonePicker.vue'
+import ZoneBadge from '../components/ZoneBadge.vue'
 
 const auth = useAuth()
 const upstreams = ref([])
@@ -15,8 +16,6 @@ const KIND_LABELS = { upstream: 'Upstream', bootstrap: 'Bootstrap', fallback: 'F
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || `#${id}`
 const zoneNames = (ids) => (ids || []).map(zoneName).join(', ') || '—'
 const serverName = (id) => servers.value.find((s) => s.id === id)?.name || '—'
-const target = (row) =>
-  row.scope === 'global' ? 'All servers' : row.scope === 'zone' ? zoneNames(row.zone_ids) : serverName(row.server_id)
 
 async function load() {
   const [u, f, z, s] = await Promise.all([
@@ -112,7 +111,11 @@ onMounted(load)
             <td class="mono"><strong>{{ u.address }}</strong><div v-if="u.description" class="muted">{{ u.description }}</div></td>
             <td><span class="badge global">{{ KIND_LABELS[u.kind] || u.kind }}</span></td>
             <td><span class="badge" :class="scopeBadge(u.scope)">{{ u.scope }}</span></td>
-            <td>{{ target(u) }}</td>
+            <td>
+              <span v-if="u.scope === 'global'" class="muted">All servers</span>
+              <span v-else-if="u.scope === 'server'">{{ serverName(u.server_id) }}</span>
+              <span v-else class="zone-pills"><ZoneBadge v-for="id in u.zone_ids" :key="id" :id="id" :label="zoneName(id)" /></span>
+            </td>
             <td><span class="badge" :class="u.enabled ? 'synced' : 'offline'">{{ u.enabled ? 'on' : 'off' }}</span></td>
             <td class="row-actions" v-if="auth.isEditor">
               <button class="btn btn-sm" @click="openUp(u)">Edit</button>
@@ -138,7 +141,11 @@ onMounted(load)
             <td class="mono"><strong>{{ f.domains }}</strong><div v-if="f.description" class="muted">{{ f.description }}</div></td>
             <td class="mono">{{ f.upstreams.split(/[\s,]+/).join(', ') }}</td>
             <td><span class="badge" :class="scopeBadge(f.scope)">{{ f.scope }}</span></td>
-            <td>{{ target(f) }}</td>
+            <td>
+              <span v-if="f.scope === 'global'" class="muted">All servers</span>
+              <span v-else-if="f.scope === 'server'">{{ serverName(f.server_id) }}</span>
+              <span v-else class="zone-pills"><ZoneBadge v-for="id in f.zone_ids" :key="id" :id="id" :label="zoneName(id)" /></span>
+            </td>
             <td><span class="badge" :class="f.enabled ? 'synced' : 'offline'">{{ f.enabled ? 'on' : 'off' }}</span></td>
             <td class="row-actions" v-if="auth.isEditor">
               <button class="btn btn-sm" @click="openFz(f)">Edit</button>
@@ -209,9 +216,9 @@ onMounted(load)
       <div class="hint">One or more domains, space-separated. Queries for these go to the upstreams below.</div>
     </div>
     <div class="form-row">
-      <label>Forward to (upstreams)</label>
-      <textarea v-model="fzForm.upstreams" rows="3" placeholder="10.0.0.53&#10;10.0.0.54"></textarea>
-      <div class="hint">One upstream per line (or space-separated). Rendered as <span class="mono">[/domain/]upstream</span>.</div>
+      <label>Forward to (DNS servers)</label>
+      <input v-model="fzForm.upstreams" placeholder="10.0.0.53 10.0.0.54" />
+      <div class="hint">Space-separated list of DNS servers. Rendered as <span class="mono">[/domain/]server</span>.</div>
     </div>
     <div class="form-row">
       <label>Scope</label>

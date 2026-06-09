@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
+import ZoneBadge from '../components/ZoneBadge.vue'
 
 const auth = useAuth()
 const stats = ref(null)
@@ -196,7 +197,7 @@ onMounted(async () => { await loadBase(); await loadMetrics() })
         <tbody>
           <tr v-for="s in servers" :key="s.id">
             <td><strong>{{ s.name }}</strong><div class="muted mono">{{ s.url }}</div></td>
-            <td>{{ zoneName(s.zone_id) }}</td>
+            <td><ZoneBadge :id="s.zone_id" :label="zoneName(s.zone_id)" /></td>
             <td><span class="badge" :class="s.status"><span class="dot"></span>{{ s.status }}</span></td>
             <td>
               <span v-if="s.in_sync" class="badge synced">In sync</span>

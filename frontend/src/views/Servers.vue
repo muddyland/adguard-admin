@@ -4,6 +4,7 @@ import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
 import ActionMenu from '../components/ActionMenu.vue'
+import ZoneBadge from '../components/ZoneBadge.vue'
 
 const auth = useAuth()
 const servers = ref([])
@@ -173,9 +174,10 @@ onMounted(load)
     <div v-if="msg" class="alert alert-success" @click="msg = ''">{{ msg }}</div>
     <div class="card">
       <table>
-        <thead><tr><th>Server</th><th>Zone</th><th>Status</th><th>Sync</th><th>Prune</th><th>Last synced</th><th></th></tr></thead>
+        <thead><tr><th>Status</th><th>Server</th><th>Zone</th><th>Version</th><th>Sync</th><th>Prune</th><th>Last synced</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in servers" :key="s.id">
+            <td><span class="badge" :class="s.status"><span class="dot"></span>{{ s.status }}</span></td>
             <td>
               <strong>{{ s.name }}</strong>
               <span v-if="!s.enabled" class="badge offline" style="margin-left:6px">disabled</span>
@@ -186,8 +188,13 @@ onMounted(load)
                 <span v-else style="color:var(--red)">✗ {{ testResult[s.id].error }}</span>
               </div>
             </td>
-            <td><span class="badge zone">{{ zoneName(s.zone_id) }}</span></td>
-            <td><span class="badge" :class="s.status"><span class="dot"></span>{{ s.status }}</span></td>
+            <td><ZoneBadge :id="s.zone_id" :label="zoneName(s.zone_id)" /></td>
+            <td>
+              <span class="mono">{{ s.version || '—' }}</span>
+              <a v-if="s.update_available" class="badge drift" style="margin-left:6px"
+                 :title="`Update available: ${s.latest_version}`"
+                 :href="s.url" target="_blank" rel="noopener">↑ {{ s.latest_version }}</a>
+            </td>
             <td>
               <span v-if="s.in_sync" class="badge synced">In sync</span>
               <span v-else class="badge drift">Drift</span>
@@ -215,7 +222,7 @@ onMounted(load)
               </ActionMenu>
             </td>
           </tr>
-          <tr v-if="!servers.length"><td colspan="7" class="empty">No servers yet. Add your AdGuard Home instances.</td></tr>
+          <tr v-if="!servers.length"><td colspan="8" class="empty">No servers yet. Add your AdGuard Home instances.</td></tr>
         </tbody>
       </table>
     </div>

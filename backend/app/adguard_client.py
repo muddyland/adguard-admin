@@ -74,6 +74,16 @@ class AdGuardClient:
         except httpx.HTTPError as exc:
             raise AdGuardError(f"stats failed: {exc}") from exc
 
+    async def version_check(self, recheck: bool = False) -> dict:
+        """POST /control/version.json — returns {new_version, announcement, ...}.
+        Uses AdGuard's cached result unless recheck is True."""
+        try:
+            resp = await self._client.post("/control/version.json", json={"recheck_now": recheck})
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise AdGuardError(f"version check failed: {exc}") from exc
+
     async def dns_info(self) -> dict:
         """GET /control/dns_info — current DNS config (upstreams, bootstrap, etc.)."""
         try:

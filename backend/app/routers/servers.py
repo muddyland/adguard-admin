@@ -244,7 +244,7 @@ async def import_settings(
             fz_skipped += 1
             continue
         session.add(ForwardZone(
-            domains=domains_str, upstreams="\n".join(addrs), scope=scope,
+            domains=domains_str, upstreams=" ".join(addrs), scope=scope,
             zone_ids=cfg_zone_ids, server_id=target_server_id,
             description=f"Imported from {server.name}",
         ))

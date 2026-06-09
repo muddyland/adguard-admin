@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlmodel import select
 
@@ -6,6 +8,11 @@ from ..models import ConfigScope, ForwardZone, Server, Zone
 from ..schemas import ForwardZoneCreate, ForwardZoneRead, ForwardZoneUpdate
 
 router = APIRouter(prefix="/api/forward-zones", tags=["forward-zones"])
+
+
+def _norm(value: str) -> str:
+    """Normalize a list field to a single space-separated line (accepts commas/newlines too)."""
+    return " ".join(t for t in re.split(r"[,\s]+", (value or "").strip()) if t)
 
 
 def _validate_scope(session, scope: ConfigScope, zone_ids, server_id):
@@ -44,11 +51,12 @@ def list_forward_zones(
 @router.post("", response_model=ForwardZoneRead, status_code=status.HTTP_201_CREATED)
 def create_forward_zone(payload: ForwardZoneCreate, _: RequireEditor, session: SessionDep):
     _validate_scope(session, payload.scope, payload.zone_ids, payload.server_id)
-    if not payload.domains.strip() or not payload.upstreams.strip():
+    domains, upstreams = _norm(payload.domains), _norm(payload.upstreams)
+    if not domains or not upstreams:
         raise HTTPException(status_code=400, detail="domains and upstreams are required")
     fz = ForwardZone(
-        domains=payload.domains.strip(),
-        upstreams=payload.upstreams.strip(),
+        domains=domains,
+        upstreams=upstreams,
         scope=payload.scope,
         zone_ids=sorted(set(payload.zone_ids)) if payload.scope == ConfigScope.zone else [],
         server_id=payload.server_id if payload.scope == ConfigScope.server else None,
@@ -79,7 +87,7 @@ def update_forward_zone(fz_id: int, payload: ForwardZoneUpdate, _: RequireEditor
         data["server_id"] = None
     for field in ("domains", "upstreams"):
         if field in data and data[field]:
-            data[field] = data[field].strip()
+            data[field] = _norm(data[field])
     for key, value in data.items():
         setattr(fz, key, value)
     session.add(fz)

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
+import ZoneBadge from '../components/ZoneBadge.vue'
 
 const auth = useAuth()
 const zones = ref([])
@@ -57,7 +58,7 @@ onMounted(load)
         <tbody>
           <tr v-for="z in zones" :key="z.id">
             <td><strong>{{ z.name }}</strong></td>
-            <td><span class="badge zone">{{ z.slug }}</span></td>
+            <td><ZoneBadge :id="z.id" :label="z.slug" /></td>
             <td class="muted">{{ z.description || '—' }}</td>
             <td>{{ z.server_count }}</td>
             <td>{{ z.record_count }}</td>

@@ -109,7 +109,7 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   padding: 0 28px; position: sticky; top: 0; z-index: 10;
 }
 .topbar h1 { font-size: 19px; }
-.content { padding: 28px; max-width: 1200px; }
+.content { padding: 28px; width: 100%; }
 
 /* ---------------- Cards ---------------- */
 .card {
@@ -262,3 +262,4 @@ input:focus, select:focus, textarea:focus {
 .zone-opt { display: flex; align-items: center; gap: 7px; font-weight: 500; cursor: pointer; }
 .zone-opt input { width: auto; }
 .zone-picker-actions { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; }
+.zone-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }

@@ -4,6 +4,7 @@ import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
 import ZonePicker from '../components/ZonePicker.vue'
+import ZoneBadge from '../components/ZoneBadge.vue'
 
 const auth = useAuth()
 const records = ref([])
@@ -101,7 +102,12 @@ onMounted(load)
             <td class="mono"><strong>{{ r.domain }}</strong><div v-if="r.description" class="muted">{{ r.description }}</div></td>
             <td class="mono">{{ r.answer }}</td>
             <td><span class="badge" :class="r.scope === 'global' ? 'global' : 'zone'">{{ r.scope }}</span></td>
-            <td>{{ r.scope === 'zone' ? zoneNames(r.zone_ids) : 'All' }}</td>
+            <td>
+              <span v-if="r.scope !== 'zone'" class="muted">All</span>
+              <span v-else class="zone-pills">
+                <ZoneBadge v-for="id in r.zone_ids" :key="id" :id="id" :label="zoneName(id)" />
+              </span>
+            </td>
             <td>
               <span v-if="r.enabled" class="badge synced">on</span>
               <span v-else class="badge offline">off</span>

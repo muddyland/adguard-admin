@@ -91,6 +91,8 @@ class ServerRead(BaseModel):
     manage_upstreams: bool
     status: SyncStatus
     version: Optional[str]
+    latest_version: Optional[str]
+    update_available: bool
     last_seen: Optional[datetime]
     last_synced: Optional[datetime]
     last_error: Optional[str]
