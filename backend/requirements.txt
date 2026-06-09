@@ -1,0 +1,22 @@
+# Web framework — fastapi 0.136.3 + pinned starlette to dodge CVE-2026-48710 ("BadHost")
+fastapi==0.136.3
+starlette>=1.0.1
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20          # >=0.0.18 fixes CVE-2024-53981 (DoS)
+
+# Data layer
+sqlmodel==0.0.38
+pydantic-settings==2.14.1
+
+# HTTP client for talking to AdGuard Home instances
+httpx==0.28.1
+
+# Auth / crypto
+# PyJWT replaces python-jose (CVE-2024-33663 algo-confusion, CVE-2024-33664 DoS; unmaintained)
+PyJWT[crypto]==2.10.1
+# pwdlib replaces passlib (unmaintained, breaks on bcrypt>=4.1 and Python>=3.13)
+pwdlib[argon2]==0.2.1
+# Authlib >=1.7.2 fixes CVE-2026-28802 (sig bypass), CVE-2025-68158 (ATO), CVE-2025-61920 (DoS)
+authlib==1.7.2
+itsdangerous==2.2.0
+cryptography==48.0.0
