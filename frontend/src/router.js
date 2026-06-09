@@ -6,6 +6,7 @@ import Dashboard from './views/Dashboard.vue'
 import Zones from './views/Zones.vue'
 import Servers from './views/Servers.vue'
 import Records from './views/Records.vue'
+import DnsSettings from './views/DnsSettings.vue'
 import Provision from './views/Provision.vue'
 import Users from './views/Users.vue'
 
@@ -15,6 +16,7 @@ const routes = [
   { path: '/zones', name: 'zones', component: Zones },
   { path: '/servers', name: 'servers', component: Servers },
   { path: '/records', name: 'records', component: Records },
+  { path: '/dns-settings', name: 'dns-settings', component: DnsSettings },
   { path: '/provision', name: 'provision', component: Provision, meta: { editor: true } },
   { path: '/users', name: 'users', component: Users, meta: { admin: true } },
 ]

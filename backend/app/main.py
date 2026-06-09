@@ -13,7 +13,18 @@ from .config import settings
 from .database import engine, init_db
 from .deps import CurrentUser
 from .models import DNSRecord, Role, Server, SyncStatus, User, Zone
-from .routers import auth, metrics, provision, records, servers, sync, users, zones
+from .routers import (
+    auth,
+    forward_zones,
+    metrics,
+    provision,
+    records,
+    servers,
+    sync,
+    upstreams,
+    users,
+    zones,
+)
 from .security import hash_password
 from .sync import sync_manager
 
@@ -68,6 +79,8 @@ app.include_router(records.router)
 app.include_router(sync.router)
 app.include_router(provision.router)
 app.include_router(metrics.router)
+app.include_router(upstreams.router)
+app.include_router(forward_zones.router)
 
 
 @app.get("/api/health")

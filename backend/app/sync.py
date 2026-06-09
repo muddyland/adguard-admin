@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from .adguard_client import AdGuardClient, AdGuardError, Rewrite
 from .certs import verify_for
 from .config import settings
 from .database import engine
-from .models import DNSRecord, RecordScope, Server, SyncStatus
+from .models import ConfigScope, DNSRecord, ForwardZone, RecordScope, Server, SyncStatus, Upstream
 from .security import decrypt_secret
 
 logger = logging.getLogger("adguard_admin.sync")
@@ -32,6 +33,7 @@ class ServerSyncResult:
     status: SyncStatus
     added: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
+    upstreams_changed: bool = False
     error: str | None = None
     version: str | None = None
 
@@ -46,6 +48,49 @@ def desired_rewrites_for_server(session: Session, server: Server) -> set[Rewrite
         elif rec.scope == RecordScope.zone and rec.zone_id == server.zone_id and server.zone_id is not None:
             desired.add(Rewrite(domain=rec.domain, answer=rec.answer))
     return desired
+
+
+def _scope_matches(item, server: Server) -> bool:
+    if item.scope == ConfigScope.global_:
+        return True
+    if item.scope == ConfigScope.zone:
+        return server.zone_id is not None and item.zone_id == server.zone_id
+    if item.scope == ConfigScope.server:
+        return item.server_id == server.id
+    return False
+
+
+def desired_upstreams_for_server(session: Session, server: Server) -> list[str]:
+    """Build the AdGuard upstream_dns list: general upstreams + forward-zone entries.
+
+    General entries are plain addresses; forward zones render to AdGuard's
+    per-domain syntax, e.g. [/internal.lan/corp.lan/]10.0.0.53.
+    """
+    entries: list[str] = []
+
+    for u in session.exec(select(Upstream).where(Upstream.enabled == True)).all():  # noqa: E712
+        if _scope_matches(u, server) and u.address.strip():
+            entries.append(u.address.strip())
+
+    for fz in session.exec(select(ForwardZone).where(ForwardZone.enabled == True)).all():  # noqa: E712
+        if not _scope_matches(fz, server):
+            continue
+        domains = [d for d in re.split(r"[,\s]+", fz.domains.strip()) if d]
+        upstreams = [a for a in re.split(r"[,\s\n]+", fz.upstreams.strip()) if a]
+        if not domains or not upstreams:
+            continue
+        prefix = "[/" + "/".join(domains) + "/]"
+        for addr in upstreams:
+            entries.append(prefix + addr)
+
+    # De-dupe while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in entries:
+        if e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
 
 
 async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
@@ -82,8 +127,22 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         result.deleted = [f"{r.domain} -> {r.answer}" for r in to_delete]
         result.status = SyncStatus.online
 
+        # Optionally reconcile upstream DNS config (opt-in per server). We only
+        # push when there's a non-empty desired set, so we never blank out a
+        # server's upstreams just because nothing is defined here.
+        upstreams_in_sync = True
+        if server.manage_upstreams:
+            desired_up = desired_upstreams_for_server(session, server)
+            if desired_up:
+                current_up = (await client.dns_info()).get("upstream_dns") or []
+                if set(current_up) != set(desired_up):
+                    upstreams_in_sync = False
+                    if not dry_run:
+                        await client.set_upstreams(desired_up)
+        result.upstreams_changed = not upstreams_in_sync
+
         server.status = SyncStatus.online
-        server.in_sync = not to_add and not to_delete if not dry_run else (not to_add and not to_delete)
+        server.in_sync = not to_add and not to_delete and upstreams_in_sync
         server.last_error = None
         if not dry_run:
             server.last_synced = datetime.now(timezone.utc)

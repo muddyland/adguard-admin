@@ -11,7 +11,7 @@ engine = create_engine(settings.database_url, echo=False, connect_args=connect_a
 # Columns added after the first release. create_all() does not ALTER existing
 # tables, so we add any missing ones on startup (SQLite-friendly, no Alembic).
 _ADDED_COLUMNS = {
-    "server": {"tls_cert": "TEXT"},
+    "server": {"tls_cert": "TEXT", "manage_upstreams": "BOOLEAN DEFAULT 0"},
 }
 
 

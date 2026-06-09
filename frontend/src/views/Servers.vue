@@ -14,9 +14,11 @@ const error = ref('')
 const testResult = ref({})
 const syncingId = ref(null)
 const msg = ref('')
-// Standalone "import from existing server" modal
+// Standalone "import from existing server" modals
 const importTarget = ref(null)
 const importScope = ref('global')
+const settingsTarget = ref(null)
+const settingsScope = ref('global')
 const importing = ref(false)
 
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || 'Unzoned'
@@ -30,13 +32,16 @@ async function load() {
 function openCreate() {
   editing.value = null
   form.value = { name: '', url: '', username: '', password: '', zone_id: null, enabled: true, prune: false,
-                 import_records: false, import_scope: 'global' }
+                 manage_upstreams: false,
+                 import_records: false, import_scope: 'global',
+                 import_settings: false, import_settings_scope: 'global' }
   error.value = ''
   showModal.value = true
 }
 function openEdit(s) {
   editing.value = s
-  form.value = { name: s.name, url: s.url, username: s.username || '', password: '', zone_id: s.zone_id, enabled: s.enabled, prune: s.prune }
+  form.value = { name: s.name, url: s.url, username: s.username || '', password: '', zone_id: s.zone_id,
+                 enabled: s.enabled, prune: s.prune, manage_upstreams: s.manage_upstreams }
   error.value = ''
   showModal.value = true
 }
@@ -45,9 +50,10 @@ async function save() {
   error.value = ''
   const payload = { ...form.value }
   const wantImport = !editing.value && payload.import_records
+  const wantSettings = !editing.value && payload.import_settings
   const importScopeChoice = payload.import_scope
-  delete payload.import_records
-  delete payload.import_scope
+  const settingsScopeChoice = payload.import_settings_scope
+  for (const k of ['import_records', 'import_scope', 'import_settings', 'import_settings_scope']) delete payload[k]
   if (editing.value && !payload.password) delete payload.password // keep existing
   try {
     let created = null
@@ -57,14 +63,20 @@ async function save() {
       created = (await api.post('/servers', payload)).data
     }
     showModal.value = false
+    const notes = []
     if (created && wantImport) {
       try {
         const { data } = await api.post(`/servers/${created.id}/import`, null, { params: { scope: importScopeChoice } })
-        msg.value = `Imported ${data.imported} record(s) from ${created.name}; ${data.skipped} already existed.`
-      } catch (e) {
-        msg.value = `Server added, but import failed: ${e.response?.data?.detail || 'unknown error'}`
-      }
+        notes.push(`${data.imported} record(s) imported`)
+      } catch (e) { notes.push(`record import failed: ${e.response?.data?.detail || 'error'}`) }
     }
+    if (created && wantSettings) {
+      try {
+        const { data } = await api.post(`/servers/${created.id}/import-settings`, null, { params: { scope: settingsScopeChoice } })
+        notes.push(`${data.upstreams_imported} upstream(s), ${data.forward_zones_imported} forward zone(s) imported`)
+      } catch (e) { notes.push(`settings import failed: ${e.response?.data?.detail || 'error'}`) }
+    }
+    if (notes.length) msg.value = `${created.name}: ${notes.join('; ')}.`
     await load()
   } catch (e) { error.value = e.response?.data?.detail || 'Save failed' }
 }
@@ -83,6 +95,25 @@ async function runImport() {
     await load()
   } catch (e) {
     msg.value = `Import failed: ${e.response?.data?.detail || 'unknown error'}`
+  } finally {
+    importing.value = false
+  }
+}
+
+function openImportSettings(s) {
+  settingsTarget.value = s
+  settingsScope.value = s.zone_id ? 'zone' : 'global'
+}
+
+async function runImportSettings() {
+  importing.value = true
+  try {
+    const { data } = await api.post(`/servers/${settingsTarget.value.id}/import-settings`, null, { params: { scope: settingsScope.value } })
+    msg.value = `Imported ${data.upstreams_imported} upstream(s) and ${data.forward_zones_imported} forward zone(s) from ${settingsTarget.value.name}.`
+    settingsTarget.value = null
+    await load()
+  } catch (e) {
+    msg.value = `Settings import failed: ${e.response?.data?.detail || 'unknown error'}`
   } finally {
     importing.value = false
   }
@@ -139,13 +170,17 @@ onMounted(load)
               <span v-if="s.in_sync" class="badge synced">In sync</span>
               <span v-else class="badge drift">Drift</span>
             </td>
-            <td>{{ s.prune ? 'On' : 'Off' }}</td>
+            <td>
+              {{ s.prune ? 'Prune' : '—' }}
+              <span v-if="s.manage_upstreams" class="badge global" style="margin-left:4px">upstreams</span>
+            </td>
             <td class="muted">{{ fmt(s.last_synced) }}</td>
             <td class="row-actions">
               <button class="btn btn-sm" @click="test(s)">Test</button>
               <template v-if="auth.isEditor">
                 <button class="btn btn-sm" :disabled="syncingId === s.id" @click="sync(s)">Sync</button>
-                <button class="btn btn-sm" @click="openImport(s)">Import</button>
+                <button class="btn btn-sm" @click="openImport(s)">Import recs</button>
+                <button class="btn btn-sm" @click="openImportSettings(s)">Import cfg</button>
                 <button class="btn btn-sm" @click="openEdit(s)">Edit</button>
                 <button class="btn btn-sm btn-danger" @click="remove(s)">Delete</button>
               </template>
@@ -193,18 +228,35 @@ onMounted(load)
       <label for="prune" style="margin:0">Prune un-managed rewrites on this server</label>
     </div>
     <div class="hint">Prune removes DNS rewrites on the server that aren't defined here. Leave off to coexist with manually-added entries.</div>
+    <div class="form-row checkbox-row" style="margin-top:10px">
+      <input type="checkbox" id="manage-up" v-model="form.manage_upstreams" />
+      <label for="manage-up" style="margin:0">Manage upstream DNS config (upstreams &amp; forward zones)</label>
+    </div>
+    <div class="hint">When on, sync also applies the DNS Settings defined for this server's scope.</div>
     <template v-if="!editing">
       <div class="form-row checkbox-row" style="margin-top:14px">
         <input type="checkbox" id="import-on-add" v-model="form.import_records" />
         <label for="import-on-add" style="margin:0">Import this server's existing DNS records on add</label>
       </div>
       <div class="form-row" v-if="form.import_records">
-        <label>Import as</label>
+        <label>Import records as</label>
         <select v-model="form.import_scope">
           <option value="global">Global records (apply to all servers)</option>
           <option value="zone" :disabled="!form.zone_id">Records scoped to this server's zone</option>
         </select>
-        <div class="hint">Reads the server's current rewrites into the admin app. Duplicates are skipped.</div>
+      </div>
+      <div class="form-row checkbox-row">
+        <input type="checkbox" id="import-settings-on-add" v-model="form.import_settings" />
+        <label for="import-settings-on-add" style="margin:0">Import this server's existing DNS settings on add</label>
+      </div>
+      <div class="form-row" v-if="form.import_settings">
+        <label>Import settings as</label>
+        <select v-model="form.import_settings_scope">
+          <option value="global">Global (apply to all servers)</option>
+          <option value="zone" :disabled="!form.zone_id">Scoped to this server's zone</option>
+          <option value="server">Scoped to this server only</option>
+        </select>
+        <div class="hint">Reads upstreams &amp; forward zones into the admin app. Duplicates are skipped.</div>
       </div>
     </template>
     <template #footer>
@@ -226,6 +278,24 @@ onMounted(load)
     <template #footer>
       <button class="btn" @click="importTarget = null">Cancel</button>
       <button class="btn btn-primary" :disabled="importing" @click="runImport">
+        <span v-if="importing" class="spinner"></span><span>Import</span>
+      </button>
+    </template>
+  </Modal>
+
+  <Modal v-if="settingsTarget" :title="`Import DNS settings from ${settingsTarget.name}`" @close="settingsTarget = null">
+    <p class="muted" style="margin-top:0">Reads the server's upstream DNS config — general upstreams and per-domain forward zones — into the admin app. Existing entries (same scope &amp; target) are skipped.</p>
+    <div class="form-row">
+      <label>Import as</label>
+      <select v-model="settingsScope">
+        <option value="global">Global (apply to all servers)</option>
+        <option value="zone" :disabled="!settingsTarget.zone_id">Scoped to this server's zone</option>
+        <option value="server">Scoped to this server only</option>
+      </select>
+    </div>
+    <template #footer>
+      <button class="btn" @click="settingsTarget = null">Cancel</button>
+      <button class="btn btn-primary" :disabled="importing" @click="runImportSettings">
         <span v-if="importing" class="spinner"></span><span>Import</span>
       </button>
     </template>

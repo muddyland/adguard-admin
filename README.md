@@ -8,11 +8,20 @@ server comes back online.
 
 - **Zones** — group servers logically (`on-prem`, `cloud`, `iot-vlan`, …).
 - **DNS records** — *global* (every server) or *zone-scoped* (only servers in a zone).
-- **Reconciliation** — a background loop diffs desired vs. actual DNS rewrites on
-  each server and applies the difference. Offline servers are retried until they converge.
+- **DNS settings** — manage **upstream DNS servers** and per-domain **forward zones**
+  at global / zone / server scope; opt-in per server via *Manage upstreams*.
+- **Reconciliation** — a background loop diffs desired vs. actual DNS rewrites (and
+  upstreams) on each server and applies the difference. Offline servers are retried
+  until they converge.
+- **Import** — pull a server's existing rewrites *and* upstream config into the admin DB.
+- **Provisioning** — one-line, token-based install of new servers (Docker or bare-metal)
+  with optional server-side TLS cert.
+- **Dashboard metrics** — combined query/blocked stats across the fleet, filterable by
+  zone and server.
 - **Users & RBAC** — `admin` / `editor` / `viewer` roles.
 - **OIDC / Authentik** — single sign-on alongside local accounts.
-- **Stack** — FastAPI + SQLModel backend, Vue 3 + Vite frontend styled after AdGuard Home.
+- **Stack** — single-container FastAPI + SQLModel backend serving a Vue 3 SPA styled
+  after AdGuard Home.
 
 ## How the source-of-truth model works
 

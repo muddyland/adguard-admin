@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from .models import InstallMethod, ProvisionStatus, RecordScope, Role, SyncStatus
+from .models import ConfigScope, InstallMethod, ProvisionStatus, RecordScope, Role, SyncStatus
 
 
 # ---- Auth ----
@@ -80,6 +80,7 @@ class ServerRead(BaseModel):
     zone_id: Optional[int]
     enabled: bool
     prune: bool
+    manage_upstreams: bool
     status: SyncStatus
     version: Optional[str]
     last_seen: Optional[datetime]
@@ -100,6 +101,7 @@ class ServerCreate(BaseModel):
     zone_id: Optional[int] = None
     enabled: bool = True
     prune: bool = False
+    manage_upstreams: bool = False
 
 
 class ServerUpdate(BaseModel):
@@ -110,6 +112,7 @@ class ServerUpdate(BaseModel):
     zone_id: Optional[int] = None
     enabled: Optional[bool] = None
     prune: Optional[bool] = None
+    manage_upstreams: Optional[bool] = None
 
 
 # ---- DNS records ----
@@ -142,6 +145,73 @@ class RecordUpdate(BaseModel):
     answer: Optional[str] = None
     scope: Optional[RecordScope] = None
     zone_id: Optional[int] = None
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+
+# ---- Upstreams ----
+class UpstreamRead(BaseModel):
+    id: int
+    address: str
+    scope: ConfigScope
+    zone_id: Optional[int]
+    server_id: Optional[int]
+    enabled: bool
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class UpstreamCreate(BaseModel):
+    address: str
+    scope: ConfigScope = ConfigScope.global_
+    zone_id: Optional[int] = None
+    server_id: Optional[int] = None
+    enabled: bool = True
+    description: Optional[str] = None
+
+
+class UpstreamUpdate(BaseModel):
+    address: Optional[str] = None
+    scope: Optional[ConfigScope] = None
+    zone_id: Optional[int] = None
+    server_id: Optional[int] = None
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+
+# ---- Forward zones ----
+class ForwardZoneRead(BaseModel):
+    id: int
+    domains: str
+    upstreams: str
+    scope: ConfigScope
+    zone_id: Optional[int]
+    server_id: Optional[int]
+    enabled: bool
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ForwardZoneCreate(BaseModel):
+    domains: str
+    upstreams: str
+    scope: ConfigScope = ConfigScope.global_
+    zone_id: Optional[int] = None
+    server_id: Optional[int] = None
+    enabled: bool = True
+    description: Optional[str] = None
+
+
+class ForwardZoneUpdate(BaseModel):
+    domains: Optional[str] = None
+    upstreams: Optional[str] = None
+    scope: Optional[ConfigScope] = None
+    zone_id: Optional[int] = None
+    server_id: Optional[int] = None
     enabled: Optional[bool] = None
     description: Optional[str] = None
 
@@ -189,5 +259,6 @@ class SyncResultRead(BaseModel):
     status: SyncStatus
     added: list[str]
     deleted: list[str]
+    upstreams_changed: bool = False
     error: Optional[str]
     version: Optional[str]

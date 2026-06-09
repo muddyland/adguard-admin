@@ -20,6 +20,13 @@ class RecordScope(str, Enum):
     zone = "zone"        # applies only to servers in a specific zone
 
 
+class ConfigScope(str, Enum):
+    """Scope for DNS settings (upstreams, forward zones)."""
+    global_ = "global"   # every server
+    zone = "zone"        # servers in a specific zone
+    server = "server"    # a single server
+
+
 class SyncStatus(str, Enum):
     unknown = "unknown"
     online = "online"
@@ -77,6 +84,8 @@ class Server(SQLModel, table=True):
     enabled: bool = True
     # Whether to remove un-managed rewrites on this server during reconcile.
     prune: bool = False
+    # Opt-in: also reconcile this server's upstream DNS config (upstreams + forward zones).
+    manage_upstreams: bool = False
     # Pinned PEM certificate for verifying TLS to this server (self-signed boxes).
     tls_cert: Optional[str] = None
 
@@ -110,6 +119,39 @@ class DNSRecord(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
     zone: Optional[Zone] = Relationship(back_populates="records")
+
+
+# --------------------------------------------------------------------------- #
+# DNS settings: upstream servers & per-domain forward zones
+# --------------------------------------------------------------------------- #
+class Upstream(SQLModel, table=True):
+    """A general upstream DNS server (e.g. 1.1.1.1, https://dns.google/dns-query)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    address: str
+    scope: ConfigScope = Field(default=ConfigScope.global_)
+    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
+    enabled: bool = True
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ForwardZone(SQLModel, table=True):
+    """Per-domain forwarding: send queries for `domains` to specific `upstreams`.
+
+    Rendered into AdGuard's upstream syntax, e.g. [/internal.lan/]10.0.0.53.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # One or more domains, whitespace/comma separated (e.g. "internal.lan corp.lan").
+    domains: str
+    # One or more upstream addresses, whitespace/comma/newline separated.
+    upstreams: str
+    scope: ConfigScope = Field(default=ConfigScope.global_)
+    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
+    enabled: bool = True
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # --------------------------------------------------------------------------- #

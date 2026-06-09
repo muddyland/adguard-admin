@@ -15,6 +15,7 @@ const nav = [
   { to: '/zones', label: 'Zones', icon: '◈' },
   { to: '/servers', label: 'Servers', icon: '⛁' },
   { to: '/records', label: 'DNS Records', icon: '⚲' },
+  { to: '/dns-settings', label: 'DNS Settings', icon: '⚙' },
 ]
 const editorNav = [
   { to: '/provision', label: 'Provisioning', icon: '✦' },

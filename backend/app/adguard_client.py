@@ -74,6 +74,25 @@ class AdGuardClient:
         except httpx.HTTPError as exc:
             raise AdGuardError(f"stats failed: {exc}") from exc
 
+    async def dns_info(self) -> dict:
+        """GET /control/dns_info — current DNS config (upstreams, bootstrap, etc.)."""
+        try:
+            resp = await self._client.get("/control/dns_info")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise AdGuardError(f"dns_info failed: {exc}") from exc
+
+    async def set_upstreams(self, upstream_dns: list[str]) -> None:
+        """Partial update of DNS config — only the upstream_dns list."""
+        try:
+            resp = await self._client.post(
+                "/control/dns_config", json={"upstream_dns": upstream_dns}
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise AdGuardError(f"set upstreams failed: {exc}") from exc
+
     async def list_rewrites(self) -> list[Rewrite]:
         try:
             resp = await self._client.get("/control/rewrite/list")
