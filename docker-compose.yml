@@ -1,6 +1,6 @@
 services:
-  backend:
-    build: ./backend
+  app:
+    build: .
     restart: unless-stopped
     environment:
       DATABASE_URL: sqlite:////data/adguard_admin.db
@@ -9,30 +9,24 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-60}
+      # UI and API share one origin now; default to the published port below.
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       # Public URL of this admin app, reachable by provisioned servers.
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       PROVISION_TOKEN_TTL_HOURS: ${PROVISION_TOKEN_TTL_HOURS:-24}
       # OIDC (optional)
       OIDC_ENABLED: ${OIDC_ENABLED:-false}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8000/api/auth/oidc/callback}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8080/api/auth/oidc/callback}
       OIDC_ADMIN_GROUP: ${OIDC_ADMIN_GROUP:-}
     volumes:
       - adguard_admin_data:/data
     ports:
-      - "8000:8000"
-
-  frontend:
-    build: ./frontend
-    restart: unless-stopped
-    depends_on:
-      - backend
-    ports:
-      - "8080:80"
+      # host:container — UI + API both served on container port 8000.
+      - "8080:8000"
 
 volumes:
   adguard_admin_data:

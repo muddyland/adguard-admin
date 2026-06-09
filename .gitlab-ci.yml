@@ -64,9 +64,11 @@ build:frontend:
     paths: [frontend/dist]
     expire_in: 14 days
 
-# ── Build images ──────────────────────────────────────────────────────────
+# ── Build image ─────────────────────────────────────────────────────────────
+# Single combined image: the multi-stage Dockerfile builds the Vue SPA and bakes
+# it into the FastAPI image, which serves both the API and the UI.
 
-.docker_base:
+build:image:
   stage: build
   tags: [saas-linux-small-amd64]
   image: docker:24.0.5
@@ -76,18 +78,9 @@ build:frontend:
   before_script:
     - until docker info; do sleep 1; done
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
   rules:
     - if: '$CI_COMMIT_REF_NAME == "main"'
     - if: '$CI_COMMIT_TAG'
-
-build:backend-image:
-  extends: .docker_base
-  script:
-    - docker build --tag $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_REF_NAME backend
-    - docker push $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_REF_NAME
-
-build:frontend-image:
-  extends: .docker_base
-  script:
-    - docker build --tag $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_REF_NAME frontend
-    - docker push $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_REF_NAME

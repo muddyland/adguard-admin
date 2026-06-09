@@ -29,6 +29,10 @@ never deletes records it didn't create unless you opt in per server.
 
 ## Quick start (Docker)
 
+The whole app ships as a **single container**: a multi-stage build compiles the
+Vue SPA and bakes it into the FastAPI image, which serves both the UI and the API
+on one port.
+
 ```bash
 cd adguard-admin
 cat > .env <<EOF
@@ -36,6 +40,7 @@ SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
 FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=change-me
+PUBLIC_BASE_URL=http://localhost:8080
 FRONTEND_URL=http://localhost:8080
 CORS_ORIGINS=http://localhost:8080
 EOF
@@ -43,8 +48,10 @@ EOF
 docker compose up --build
 ```
 
+Everything is served on **<http://localhost:8080>**:
+
 - UI: <http://localhost:8080>
-- API docs: <http://localhost:8000/docs>
+- API docs: <http://localhost:8080/docs>
 
 Log in with the bootstrap admin and **change the password immediately** (Users page).
 
@@ -71,7 +78,7 @@ npm run dev                   # http://localhost:5173, proxies /api to :8000
 ## OIDC with Authentik
 
 1. In Authentik create an **OAuth2/OpenID Provider** + Application.
-   - Redirect URI: `http://<backend-host>:8000/api/auth/oidc/callback`
+   - Redirect URI: `<public-base-url>/api/auth/oidc/callback` (e.g. `http://localhost:8080/api/auth/oidc/callback`)
    - Scopes: `openid email profile` (add a `groups` claim if you want group→role mapping).
 2. Set in `.env`:
 
@@ -80,7 +87,7 @@ npm run dev                   # http://localhost:5173, proxies /api to :8000
    OIDC_ISSUER=https://authentik.example.com/application/o/<app-slug>/
    OIDC_CLIENT_ID=...
    OIDC_CLIENT_SECRET=...
-   OIDC_REDIRECT_URI=http://<backend-host>:8000/api/auth/oidc/callback
+   OIDC_REDIRECT_URI=http://localhost:8080/api/auth/oidc/callback
    OIDC_ADMIN_GROUP=adguard-admins     # optional: members become admins
    OIDC_DEFAULT_ROLE=viewer
    ```

@@ -65,6 +65,15 @@ class AdGuardClient:
         except httpx.HTTPError as exc:
             raise AdGuardError(f"status check failed: {exc}") from exc
 
+    async def stats(self) -> dict:
+        """GET /control/stats — query counts, blocked counts, top lists, timings."""
+        try:
+            resp = await self._client.get("/control/stats")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise AdGuardError(f"stats failed: {exc}") from exc
+
     async def list_rewrites(self) -> list[Rewrite]:
         try:
             resp = await self._client.get("/control/rewrite/list")

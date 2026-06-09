@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
@@ -7,6 +7,11 @@ import Modal from '../components/Modal.vue'
 const auth = useAuth()
 const tokens = ref([])
 const zones = ref([])
+const showRevoked = ref(true)
+
+const visibleTokens = computed(() =>
+  showRevoked.value ? tokens.value : tokens.value.filter((t) => t.status !== 'revoked')
+)
 const showForm = ref(false)
 const result = ref(null)         // the created token (shows the command)
 const error = ref('')
@@ -51,7 +56,13 @@ async function copy(text, id) {
 }
 
 async function revoke(t) {
-  if (!confirm(`Revoke the provisioning token for "${t.name}"?`)) return
+  if (!confirm(`Revoke the token for "${t.name}"? The one-line command will stop working.`)) return
+  await api.post(`/provision/tokens/${t.id}/revoke`)
+  await load()
+}
+
+async function remove(t) {
+  if (!confirm(`Delete the provisioning record for "${t.name}"?`)) return
   await api.delete(`/provision/tokens/${t.id}`)
   await load()
 }
@@ -68,11 +79,16 @@ onMounted(load)
   </div>
   <div class="content">
     <div class="card">
-      <div class="card-header"><h2>Provisioning tokens</h2></div>
+      <div class="card-header">
+        <h2>Provisioning tokens</h2>
+        <label class="checkbox-row" style="font-weight:500">
+          <input type="checkbox" v-model="showRevoked" /> Show revoked
+        </label>
+      </div>
       <table>
         <thead><tr><th>Name</th><th>Zone</th><th>Method</th><th>SSL</th><th>Status</th><th>Expires</th><th></th></tr></thead>
         <tbody>
-          <tr v-for="t in tokens" :key="t.id">
+          <tr v-for="t in visibleTokens" :key="t.id">
             <td><strong>{{ t.name }}</strong></td>
             <td>{{ zoneName(t.zone_id) }}</td>
             <td><span class="badge global">{{ t.method === 'docker' ? 'Docker' : 'Bare-metal' }}</span></td>
@@ -87,11 +103,12 @@ onMounted(load)
               <button v-if="t.status === 'pending'" class="btn btn-sm" @click="copy(t.command, t.id)">
                 {{ copied === t.id ? 'Copied!' : 'Copy command' }}
               </button>
-              <button v-if="t.status === 'pending'" class="btn btn-sm btn-danger" @click="revoke(t)">Revoke</button>
-              <span v-if="t.status === 'completed'" class="muted">server #{{ t.server_id }}</span>
+              <button v-if="t.status === 'pending'" class="btn btn-sm" @click="revoke(t)">Revoke</button>
+              <span v-if="t.status === 'completed'" class="muted" style="margin-right:6px">server #{{ t.server_id }}</span>
+              <button class="btn btn-sm btn-danger" @click="remove(t)">Delete</button>
             </td>
           </tr>
-          <tr v-if="!tokens.length"><td colspan="7" class="empty">No provisioning requests yet.</td></tr>
+          <tr v-if="!visibleTokens.length"><td colspan="7" class="empty">No provisioning requests to show.</td></tr>
         </tbody>
       </table>
     </div>

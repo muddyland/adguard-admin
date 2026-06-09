@@ -1,0 +1,15 @@
+# Build context hygiene for the single combined image (context = repo root).
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/node_modules/
+**/dist/
+**/*.db
+**/*.sqlite3
+.git/
+.env
+**/.env
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/

@@ -113,8 +113,9 @@ def list_tokens(_: RequireEditor, session: SessionDep):
     return [_to_read(t) for t in rows]
 
 
-@router.delete("/tokens/{token_id}", status_code=204)
+@router.post("/tokens/{token_id}/revoke", response_model=ProvisionTokenRead)
 def revoke_token(token_id: int, _: RequireEditor, session: SessionDep):
+    """Invalidate a pending token (the one-liner stops working) but keep the record."""
     t = session.get(ProvisioningToken, token_id)
     if not t:
         raise HTTPException(status_code=404, detail="Token not found")
@@ -122,6 +123,18 @@ def revoke_token(token_id: int, _: RequireEditor, session: SessionDep):
         t.status = ProvisionStatus.revoked
         session.add(t)
         session.commit()
+        session.refresh(t)
+    return _to_read(t)
+
+
+@router.delete("/tokens/{token_id}", status_code=204)
+def delete_token(token_id: int, _: RequireEditor, session: SessionDep):
+    """Permanently remove a token record of any status from the list."""
+    t = session.get(ProvisioningToken, token_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Token not found")
+    session.delete(t)
+    session.commit()
 
 
 # --------------------------------------------------------------------------- #
