@@ -241,8 +241,8 @@ red(){{ printf '\\033[0;31m[adguard-admin]\\033[0m %s\\n' "$*" >&2; }}
 [ "$(id -u)" -eq 0 ] || {{ red "Please run as root (the one-liner uses sudo)."; exit 1; }}
 command -v curl >/dev/null 2>&1 || {{ red "curl is required."; exit 1; }}
 
-green "Fetching configuration..."
-CONFIG="$(curl -fsSL "$BASE_URL/api/provision/$TOKEN/config")" || {{ red "Invalid or expired token."; exit 1; }}
+green "Fetching configuration from $BASE_URL ..."
+CONFIG="$(curl -fsSL "$BASE_URL/api/provision/$TOKEN/config")" || {{ red "Could not fetch config from $BASE_URL — is the admin app reachable from this host, and is the token still valid?"; exit 1; }}
 # shellcheck disable=SC1090
 eval "$CONFIG"
 

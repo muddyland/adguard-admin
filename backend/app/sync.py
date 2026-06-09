@@ -45,7 +45,7 @@ def desired_rewrites_for_server(session: Session, server: Server) -> set[Rewrite
     for rec in session.exec(stmt).all():
         if rec.scope == RecordScope.global_:
             desired.add(Rewrite(domain=rec.domain, answer=rec.answer))
-        elif rec.scope == RecordScope.zone and rec.zone_id == server.zone_id and server.zone_id is not None:
+        elif rec.scope == RecordScope.zone and server.zone_id is not None and server.zone_id in (rec.zone_ids or []):
             desired.add(Rewrite(domain=rec.domain, answer=rec.answer))
     return desired
 
@@ -54,7 +54,7 @@ def _scope_matches(item, server: Server) -> bool:
     if item.scope == ConfigScope.global_:
         return True
     if item.scope == ConfigScope.zone:
-        return server.zone_id is not None and item.zone_id == server.zone_id
+        return server.zone_id is not None and server.zone_id in (item.zone_ids or [])
     if item.scope == ConfigScope.server:
         return item.server_id == server.id
     return False

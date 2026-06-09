@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
+import ActionMenu from '../components/ActionMenu.vue'
 
 const auth = useAuth()
 const servers = ref([])
@@ -176,14 +177,20 @@ onMounted(load)
             </td>
             <td class="muted">{{ fmt(s.last_synced) }}</td>
             <td class="row-actions">
-              <button class="btn btn-sm" @click="test(s)">Test</button>
-              <template v-if="auth.isEditor">
-                <button class="btn btn-sm" :disabled="syncingId === s.id" @click="sync(s)">Sync</button>
-                <button class="btn btn-sm" @click="openImport(s)">Import recs</button>
-                <button class="btn btn-sm" @click="openImportSettings(s)">Import cfg</button>
-                <button class="btn btn-sm" @click="openEdit(s)">Edit</button>
-                <button class="btn btn-sm btn-danger" @click="remove(s)">Delete</button>
-              </template>
+              <ActionMenu>
+                <button class="menu-item" @click="test(s)">Test connection</button>
+                <template v-if="auth.isEditor">
+                  <button class="menu-item" :disabled="syncingId === s.id" @click="sync(s)">
+                    {{ syncingId === s.id ? 'Syncing…' : 'Sync now' }}
+                  </button>
+                  <div class="menu-divider"></div>
+                  <button class="menu-item" @click="openImport(s)">Import records</button>
+                  <button class="menu-item" @click="openImportSettings(s)">Import DNS settings</button>
+                  <div class="menu-divider"></div>
+                  <button class="menu-item" @click="openEdit(s)">Edit</button>
+                  <button class="menu-item danger" @click="remove(s)">Delete</button>
+                </template>
+              </ActionMenu>
             </td>
           </tr>
           <tr v-if="!servers.length"><td colspan="7" class="empty">No servers yet. Add your AdGuard Home instances.</td></tr>

@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
+import ZonePicker from '../components/ZonePicker.vue'
 
 const auth = useAuth()
 const records = ref([])
@@ -15,12 +16,13 @@ const filterScope = ref('')
 const filterZone = ref('')
 const search = ref('')
 
-const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || '—'
+const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || `#${id}`
+const zoneNames = (ids) => (ids || []).map(zoneName).join(', ') || '—'
 
 const filtered = computed(() =>
   records.value.filter((r) => {
     if (filterScope.value && r.scope !== filterScope.value) return false
-    if (filterZone.value && String(r.zone_id) !== filterZone.value) return false
+    if (filterZone.value && !(r.zone_ids || []).includes(Number(filterZone.value))) return false
     if (search.value && !`${r.domain} ${r.answer}`.toLowerCase().includes(search.value.toLowerCase())) return false
     return true
   })
@@ -34,13 +36,13 @@ async function load() {
 
 function openCreate() {
   editing.value = null
-  form.value = { domain: '', answer: '', scope: 'global', zone_id: null, enabled: true, description: '' }
+  form.value = { domain: '', answer: '', scope: 'global', zone_ids: [], enabled: true, description: '' }
   error.value = ''
   showModal.value = true
 }
 function openEdit(r) {
   editing.value = r
-  form.value = { domain: r.domain, answer: r.answer, scope: r.scope, zone_id: r.zone_id, enabled: r.enabled, description: r.description || '' }
+  form.value = { domain: r.domain, answer: r.answer, scope: r.scope, zone_ids: [...(r.zone_ids || [])], enabled: r.enabled, description: r.description || '' }
   error.value = ''
   showModal.value = true
 }
@@ -93,13 +95,13 @@ onMounted(load)
 
     <div class="card">
       <table>
-        <thead><tr><th>Domain</th><th>Answer</th><th>Scope</th><th>Zone</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Domain</th><th>Answer</th><th>Scope</th><th>Zones</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in filtered" :key="r.id">
             <td class="mono"><strong>{{ r.domain }}</strong><div v-if="r.description" class="muted">{{ r.description }}</div></td>
             <td class="mono">{{ r.answer }}</td>
             <td><span class="badge" :class="r.scope === 'global' ? 'global' : 'zone'">{{ r.scope }}</span></td>
-            <td>{{ r.scope === 'zone' ? zoneName(r.zone_id) : 'All' }}</td>
+            <td>{{ r.scope === 'zone' ? zoneNames(r.zone_ids) : 'All' }}</td>
             <td>
               <span v-if="r.enabled" class="badge synced">on</span>
               <span v-else class="badge offline">off</span>
@@ -133,15 +135,12 @@ onMounted(load)
       <label>Scope</label>
       <select v-model="form.scope">
         <option value="global">Global — applies to every server</option>
-        <option value="zone">Zone — only servers in a zone</option>
+        <option value="zone">Zone — only servers in selected zones</option>
       </select>
     </div>
     <div class="form-row" v-if="form.scope === 'zone'">
-      <label>Zone</label>
-      <select v-model="form.zone_id">
-        <option :value="null" disabled>Select a zone…</option>
-        <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.name }}</option>
-      </select>
+      <label>Zones</label>
+      <ZonePicker v-model="form.zone_ids" :zones="zones" />
     </div>
     <div class="form-row">
       <label>Description</label>

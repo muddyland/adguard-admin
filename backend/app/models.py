@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from sqlalchemy import JSON
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -71,7 +72,6 @@ class Zone(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
     servers: list["Server"] = Relationship(back_populates="zone")
-    records: list["DNSRecord"] = Relationship(back_populates="zone")
 
 
 class Server(SQLModel, table=True):
@@ -111,14 +111,12 @@ class DNSRecord(SQLModel, table=True):
     domain: str = Field(index=True)            # e.g. nas.home.lan
     answer: str                                 # IP or hostname (CNAME)
     scope: RecordScope = Field(default=RecordScope.global_)
-    # Required when scope == zone, ignored for global records.
-    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    # One or more zones when scope == zone; empty/ignored for global records.
+    zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     enabled: bool = True
     description: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
-
-    zone: Optional[Zone] = Relationship(back_populates="records")
 
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +127,7 @@ class Upstream(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     address: str
     scope: ConfigScope = Field(default=ConfigScope.global_)
-    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
     enabled: bool = True
     description: Optional[str] = None
@@ -147,7 +145,7 @@ class ForwardZone(SQLModel, table=True):
     # One or more upstream addresses, whitespace/comma/newline separated.
     upstreams: str
     scope: ConfigScope = Field(default=ConfigScope.global_)
-    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
     enabled: bool = True
     description: Optional[str] = None

@@ -10,12 +10,13 @@ from ..schemas import RecordCreate, RecordRead, RecordUpdate
 router = APIRouter(prefix="/api/records", tags=["records"])
 
 
-def _validate_scope(session, scope: RecordScope, zone_id):
+def _validate_scope(session, scope: RecordScope, zone_ids: list[int]):
     if scope == RecordScope.zone:
-        if zone_id is None:
-            raise HTTPException(status_code=400, detail="zone-scoped records require a zone_id")
-        if not session.get(Zone, zone_id):
-            raise HTTPException(status_code=400, detail="zone_id does not exist")
+        if not zone_ids:
+            raise HTTPException(status_code=400, detail="zone-scoped records require at least one zone")
+        for zid in zone_ids:
+            if not session.get(Zone, zid):
+                raise HTTPException(status_code=400, detail=f"zone {zid} does not exist")
 
 
 @router.get("", response_model=list[RecordRead])
@@ -28,20 +29,21 @@ def list_records(
     stmt = select(DNSRecord)
     if scope is not None:
         stmt = stmt.where(DNSRecord.scope == scope)
+    records = session.exec(stmt.order_by(DNSRecord.domain)).all()
+    # zone_ids is a JSON list, so filter membership in Python.
     if zone_id is not None:
-        stmt = stmt.where(DNSRecord.zone_id == zone_id)
-    return session.exec(stmt.order_by(DNSRecord.domain)).all()
+        records = [r for r in records if zone_id in (r.zone_ids or [])]
+    return records
 
 
 @router.post("", response_model=RecordRead, status_code=status.HTTP_201_CREATED)
 def create_record(payload: RecordCreate, _: RequireEditor, session: SessionDep):
-    _validate_scope(session, payload.scope, payload.zone_id)
-    zone_id = payload.zone_id if payload.scope == RecordScope.zone else None
+    _validate_scope(session, payload.scope, payload.zone_ids)
     record = DNSRecord(
         domain=payload.domain.strip().lower(),
         answer=payload.answer.strip(),
         scope=payload.scope,
-        zone_id=zone_id,
+        zone_ids=sorted(set(payload.zone_ids)) if payload.scope == RecordScope.zone else [],
         enabled=payload.enabled,
         description=payload.description,
     )
@@ -58,10 +60,12 @@ def update_record(record_id: int, payload: RecordUpdate, _: RequireEditor, sessi
         raise HTTPException(status_code=404, detail="Record not found")
     data = payload.model_dump(exclude_unset=True)
     new_scope = data.get("scope", record.scope)
-    new_zone = data.get("zone_id", record.zone_id)
-    _validate_scope(session, new_scope, new_zone)
+    new_zones = data.get("zone_ids", record.zone_ids)
+    _validate_scope(session, new_scope, new_zones)
     if new_scope == RecordScope.global_:
-        data["zone_id"] = None
+        data["zone_ids"] = []
+    elif "zone_ids" in data:
+        data["zone_ids"] = sorted(set(data["zone_ids"]))
     if "domain" in data and data["domain"]:
         data["domain"] = data["domain"].strip().lower()
     if "answer" in data and data["answer"]:

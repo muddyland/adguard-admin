@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import Modal from '../components/Modal.vue'
+import ZonePicker from '../components/ZonePicker.vue'
 
 const auth = useAuth()
 const upstreams = ref([])
@@ -10,10 +11,11 @@ const forwardZones = ref([])
 const zones = ref([])
 const servers = ref([])
 
-const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || '—'
+const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || `#${id}`
+const zoneNames = (ids) => (ids || []).map(zoneName).join(', ') || '—'
 const serverName = (id) => servers.value.find((s) => s.id === id)?.name || '—'
 const target = (row) =>
-  row.scope === 'global' ? 'All servers' : row.scope === 'zone' ? zoneName(row.zone_id) : serverName(row.server_id)
+  row.scope === 'global' ? 'All servers' : row.scope === 'zone' ? zoneNames(row.zone_ids) : serverName(row.server_id)
 
 async function load() {
   const [u, f, z, s] = await Promise.all([
@@ -34,8 +36,8 @@ const upError = ref('')
 function openUp(u) {
   editUp.value = u
   upForm.value = u
-    ? { address: u.address, scope: u.scope, zone_id: u.zone_id, server_id: u.server_id, enabled: u.enabled, description: u.description || '' }
-    : { address: '', scope: 'global', zone_id: null, server_id: null, enabled: true, description: '' }
+    ? { address: u.address, scope: u.scope, zone_ids: [...(u.zone_ids || [])], server_id: u.server_id, enabled: u.enabled, description: u.description || '' }
+    : { address: '', scope: 'global', zone_ids: [], server_id: null, enabled: true, description: '' }
   upError.value = ''
   showUp.value = true
 }
@@ -62,8 +64,8 @@ const fzError = ref('')
 function openFz(f) {
   editFz.value = f
   fzForm.value = f
-    ? { domains: f.domains, upstreams: f.upstreams, scope: f.scope, zone_id: f.zone_id, server_id: f.server_id, enabled: f.enabled, description: f.description || '' }
-    : { domains: '', upstreams: '', scope: 'global', zone_id: null, server_id: null, enabled: true, description: '' }
+    ? { domains: f.domains, upstreams: f.upstreams, scope: f.scope, zone_ids: [...(f.zone_ids || [])], server_id: f.server_id, enabled: f.enabled, description: f.description || '' }
+    : { domains: '', upstreams: '', scope: 'global', zone_ids: [], server_id: null, enabled: true, description: '' }
   fzError.value = ''
   showFz.value = true
 }
@@ -159,16 +161,13 @@ onMounted(load)
       <label>Scope</label>
       <select v-model="upForm.scope">
         <option value="global">Global — every server</option>
-        <option value="zone">Zone — servers in a zone</option>
+        <option value="zone">Zone — servers in selected zones</option>
         <option value="server">Server — one server</option>
       </select>
     </div>
     <div class="form-row" v-if="upForm.scope === 'zone'">
-      <label>Zone</label>
-      <select v-model="upForm.zone_id">
-        <option :value="null" disabled>Select a zone…</option>
-        <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.name }}</option>
-      </select>
+      <label>Zones</label>
+      <ZonePicker v-model="upForm.zone_ids" :zones="zones" />
     </div>
     <div class="form-row" v-if="upForm.scope === 'server'">
       <label>Server</label>
@@ -207,16 +206,13 @@ onMounted(load)
       <label>Scope</label>
       <select v-model="fzForm.scope">
         <option value="global">Global — every server</option>
-        <option value="zone">Zone — servers in a zone</option>
+        <option value="zone">Zone — servers in selected zones</option>
         <option value="server">Server — one server</option>
       </select>
     </div>
     <div class="form-row" v-if="fzForm.scope === 'zone'">
-      <label>Zone</label>
-      <select v-model="fzForm.zone_id">
-        <option :value="null" disabled>Select a zone…</option>
-        <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.name }}</option>
-      </select>
+      <label>Zones</label>
+      <ZonePicker v-model="fzForm.zone_ids" :zones="zones" />
     </div>
     <div class="form-row" v-if="fzForm.scope === 'server'">
       <label>Server</label>

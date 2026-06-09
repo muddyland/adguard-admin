@@ -235,3 +235,30 @@ input:focus, select:focus, textarea:focus {
 @keyframes spin { to { transform: rotate(360deg); } }
 .flex { display: flex; align-items: center; gap: 8px; }
 .gap-between { justify-content: space-between; }
+
+/* ---------------- Action menu (dropdown) ---------------- */
+.action-menu { position: relative; display: inline-block; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 4px);
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); min-width: 180px; z-index: 50; padding: 6px;
+}
+.menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 12px; border: none; background: none; color: var(--text);
+  font-size: 14px; font-weight: 500; border-radius: 6px; cursor: pointer;
+}
+.menu-item:hover { background: var(--bg); }
+.menu-item.danger { color: var(--red); }
+.menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.menu-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+
+/* ---------------- Zone picker (multi-select) ---------------- */
+.zone-picker {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  max-height: 160px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px;
+}
+.zone-opt { display: flex; align-items: center; gap: 7px; font-weight: 500; cursor: pointer; }
+.zone-opt input { width: auto; }
+.zone-picker-actions { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; }

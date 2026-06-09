@@ -8,12 +8,13 @@ from ..schemas import ForwardZoneCreate, ForwardZoneRead, ForwardZoneUpdate
 router = APIRouter(prefix="/api/forward-zones", tags=["forward-zones"])
 
 
-def _validate_scope(session, scope: ConfigScope, zone_id, server_id):
+def _validate_scope(session, scope: ConfigScope, zone_ids, server_id):
     if scope == ConfigScope.zone:
-        if zone_id is None:
-            raise HTTPException(status_code=400, detail="zone-scoped forward zones require a zone_id")
-        if not session.get(Zone, zone_id):
-            raise HTTPException(status_code=400, detail="zone_id does not exist")
+        if not zone_ids:
+            raise HTTPException(status_code=400, detail="zone-scoped forward zones require at least one zone")
+        for zid in zone_ids:
+            if not session.get(Zone, zid):
+                raise HTTPException(status_code=400, detail=f"zone {zid} does not exist")
     if scope == ConfigScope.server:
         if server_id is None:
             raise HTTPException(status_code=400, detail="server-scoped forward zones require a server_id")
@@ -32,23 +33,24 @@ def list_forward_zones(
     stmt = select(ForwardZone)
     if scope is not None:
         stmt = stmt.where(ForwardZone.scope == scope)
-    if zone_id is not None:
-        stmt = stmt.where(ForwardZone.zone_id == zone_id)
     if server_id is not None:
         stmt = stmt.where(ForwardZone.server_id == server_id)
-    return session.exec(stmt).all()
+    rows = session.exec(stmt).all()
+    if zone_id is not None:
+        rows = [f for f in rows if zone_id in (f.zone_ids or [])]
+    return rows
 
 
 @router.post("", response_model=ForwardZoneRead, status_code=status.HTTP_201_CREATED)
 def create_forward_zone(payload: ForwardZoneCreate, _: RequireEditor, session: SessionDep):
-    _validate_scope(session, payload.scope, payload.zone_id, payload.server_id)
+    _validate_scope(session, payload.scope, payload.zone_ids, payload.server_id)
     if not payload.domains.strip() or not payload.upstreams.strip():
         raise HTTPException(status_code=400, detail="domains and upstreams are required")
     fz = ForwardZone(
         domains=payload.domains.strip(),
         upstreams=payload.upstreams.strip(),
         scope=payload.scope,
-        zone_id=payload.zone_id if payload.scope == ConfigScope.zone else None,
+        zone_ids=sorted(set(payload.zone_ids)) if payload.scope == ConfigScope.zone else [],
         server_id=payload.server_id if payload.scope == ConfigScope.server else None,
         enabled=payload.enabled,
         description=payload.description,
@@ -66,11 +68,13 @@ def update_forward_zone(fz_id: int, payload: ForwardZoneUpdate, _: RequireEditor
         raise HTTPException(status_code=404, detail="Forward zone not found")
     data = payload.model_dump(exclude_unset=True)
     new_scope = data.get("scope", fz.scope)
-    new_zone = data.get("zone_id", fz.zone_id)
+    new_zones = data.get("zone_ids", fz.zone_ids)
     new_server = data.get("server_id", fz.server_id)
-    _validate_scope(session, new_scope, new_zone, new_server)
+    _validate_scope(session, new_scope, new_zones, new_server)
     if new_scope != ConfigScope.zone:
-        data["zone_id"] = None
+        data["zone_ids"] = []
+    elif "zone_ids" in data:
+        data["zone_ids"] = sorted(set(data["zone_ids"]))
     if new_scope != ConfigScope.server:
         data["server_id"] = None
     for field in ("domains", "upstreams"):

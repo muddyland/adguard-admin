@@ -8,12 +8,13 @@ from ..schemas import UpstreamCreate, UpstreamRead, UpstreamUpdate
 router = APIRouter(prefix="/api/upstreams", tags=["upstreams"])
 
 
-def _validate_scope(session, scope: ConfigScope, zone_id, server_id):
+def _validate_scope(session, scope: ConfigScope, zone_ids, server_id):
     if scope == ConfigScope.zone:
-        if zone_id is None:
-            raise HTTPException(status_code=400, detail="zone-scoped upstreams require a zone_id")
-        if not session.get(Zone, zone_id):
-            raise HTTPException(status_code=400, detail="zone_id does not exist")
+        if not zone_ids:
+            raise HTTPException(status_code=400, detail="zone-scoped upstreams require at least one zone")
+        for zid in zone_ids:
+            if not session.get(Zone, zid):
+                raise HTTPException(status_code=400, detail=f"zone {zid} does not exist")
     if scope == ConfigScope.server:
         if server_id is None:
             raise HTTPException(status_code=400, detail="server-scoped upstreams require a server_id")
@@ -32,20 +33,21 @@ def list_upstreams(
     stmt = select(Upstream)
     if scope is not None:
         stmt = stmt.where(Upstream.scope == scope)
-    if zone_id is not None:
-        stmt = stmt.where(Upstream.zone_id == zone_id)
     if server_id is not None:
         stmt = stmt.where(Upstream.server_id == server_id)
-    return session.exec(stmt).all()
+    rows = session.exec(stmt).all()
+    if zone_id is not None:
+        rows = [u for u in rows if zone_id in (u.zone_ids or [])]
+    return rows
 
 
 @router.post("", response_model=UpstreamRead, status_code=status.HTTP_201_CREATED)
 def create_upstream(payload: UpstreamCreate, _: RequireEditor, session: SessionDep):
-    _validate_scope(session, payload.scope, payload.zone_id, payload.server_id)
+    _validate_scope(session, payload.scope, payload.zone_ids, payload.server_id)
     up = Upstream(
         address=payload.address.strip(),
         scope=payload.scope,
-        zone_id=payload.zone_id if payload.scope == ConfigScope.zone else None,
+        zone_ids=sorted(set(payload.zone_ids)) if payload.scope == ConfigScope.zone else [],
         server_id=payload.server_id if payload.scope == ConfigScope.server else None,
         enabled=payload.enabled,
         description=payload.description,
@@ -63,11 +65,13 @@ def update_upstream(upstream_id: int, payload: UpstreamUpdate, _: RequireEditor,
         raise HTTPException(status_code=404, detail="Upstream not found")
     data = payload.model_dump(exclude_unset=True)
     new_scope = data.get("scope", up.scope)
-    new_zone = data.get("zone_id", up.zone_id)
+    new_zones = data.get("zone_ids", up.zone_ids)
     new_server = data.get("server_id", up.server_id)
-    _validate_scope(session, new_scope, new_zone, new_server)
+    _validate_scope(session, new_scope, new_zones, new_server)
     if new_scope != ConfigScope.zone:
-        data["zone_id"] = None
+        data["zone_ids"] = []
+    elif "zone_ids" in data:
+        data["zone_ids"] = sorted(set(data["zone_ids"]))
     if new_scope != ConfigScope.server:
         data["server_id"] = None
     if "address" in data and data["address"]:

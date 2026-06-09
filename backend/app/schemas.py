@@ -121,7 +121,7 @@ class RecordRead(BaseModel):
     domain: str
     answer: str
     scope: RecordScope
-    zone_id: Optional[int]
+    zone_ids: list[int]
     enabled: bool
     description: Optional[str]
     created_at: datetime
@@ -135,7 +135,7 @@ class RecordCreate(BaseModel):
     domain: str
     answer: str
     scope: RecordScope = RecordScope.global_
-    zone_id: Optional[int] = None
+    zone_ids: list[int] = []
     enabled: bool = True
     description: Optional[str] = None
 
@@ -144,7 +144,7 @@ class RecordUpdate(BaseModel):
     domain: Optional[str] = None
     answer: Optional[str] = None
     scope: Optional[RecordScope] = None
-    zone_id: Optional[int] = None
+    zone_ids: Optional[list[int]] = None
     enabled: Optional[bool] = None
     description: Optional[str] = None
 
@@ -154,7 +154,7 @@ class UpstreamRead(BaseModel):
     id: int
     address: str
     scope: ConfigScope
-    zone_id: Optional[int]
+    zone_ids: list[int]
     server_id: Optional[int]
     enabled: bool
     description: Optional[str]
@@ -166,7 +166,7 @@ class UpstreamRead(BaseModel):
 class UpstreamCreate(BaseModel):
     address: str
     scope: ConfigScope = ConfigScope.global_
-    zone_id: Optional[int] = None
+    zone_ids: list[int] = []
     server_id: Optional[int] = None
     enabled: bool = True
     description: Optional[str] = None
@@ -175,7 +175,7 @@ class UpstreamCreate(BaseModel):
 class UpstreamUpdate(BaseModel):
     address: Optional[str] = None
     scope: Optional[ConfigScope] = None
-    zone_id: Optional[int] = None
+    zone_ids: Optional[list[int]] = None
     server_id: Optional[int] = None
     enabled: Optional[bool] = None
     description: Optional[str] = None
@@ -187,7 +187,7 @@ class ForwardZoneRead(BaseModel):
     domains: str
     upstreams: str
     scope: ConfigScope
-    zone_id: Optional[int]
+    zone_ids: list[int]
     server_id: Optional[int]
     enabled: bool
     description: Optional[str]
@@ -200,7 +200,7 @@ class ForwardZoneCreate(BaseModel):
     domains: str
     upstreams: str
     scope: ConfigScope = ConfigScope.global_
-    zone_id: Optional[int] = None
+    zone_ids: list[int] = []
     server_id: Optional[int] = None
     enabled: bool = True
     description: Optional[str] = None
@@ -210,7 +210,7 @@ class ForwardZoneUpdate(BaseModel):
     domains: Optional[str] = None
     upstreams: Optional[str] = None
     scope: Optional[ConfigScope] = None
-    zone_id: Optional[int] = None
+    zone_ids: Optional[list[int]] = None
     server_id: Optional[int] = None
     enabled: Optional[bool] = None
     description: Optional[str] = None

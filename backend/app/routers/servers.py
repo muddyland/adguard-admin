@@ -118,7 +118,7 @@ async def import_records(
     if scope == RecordScope.zone and server.zone_id is None:
         raise HTTPException(status_code=400, detail="Server has no zone; import as global instead")
 
-    zone_id = server.zone_id if scope == RecordScope.zone else None
+    rec_zone_ids = [server.zone_id] if scope == RecordScope.zone else []
     client = AdGuardClient(server.url, server.username, decrypt_secret(server.password_enc), verify=verify_for(server.tls_cert))
     try:
         rewrites = await client.list_rewrites()
@@ -131,14 +131,18 @@ async def import_records(
     for rw in rewrites:
         domain = rw.domain.strip().lower()
         answer = rw.answer.strip()
-        exists = session.exec(
+        candidates = session.exec(
             select(DNSRecord).where(
                 DNSRecord.domain == domain,
                 DNSRecord.answer == answer,
                 DNSRecord.scope == scope,
-                DNSRecord.zone_id == zone_id,
             )
-        ).first()
+        ).all()
+        # For zone scope, "exists" means an equivalent record already targets this zone.
+        exists = any(
+            scope != RecordScope.zone or server.zone_id in (r.zone_ids or [])
+            for r in candidates
+        )
         if exists:
             skipped += 1
             continue
@@ -147,7 +151,7 @@ async def import_records(
                 domain=domain,
                 answer=answer,
                 scope=scope,
-                zone_id=zone_id,
+                zone_ids=rec_zone_ids,
                 description=f"Imported from {server.name}",
             )
         )
@@ -175,7 +179,7 @@ async def import_settings(
     if scope == ConfigScope.zone and server.zone_id is None:
         raise HTTPException(status_code=400, detail="Server has no zone; import as global or server scope")
 
-    zone_id = server.zone_id if scope == ConfigScope.zone else None
+    cfg_zone_ids = [server.zone_id] if scope == ConfigScope.zone else []
     target_server_id = server.id if scope == ConfigScope.server else None
 
     client = AdGuardClient(server.url, server.username, decrypt_secret(server.password_enc), verify=verify_for(server.tls_cert))
@@ -189,40 +193,41 @@ async def import_settings(
     plain, forwards = _parse_upstreams(info.get("upstream_dns") or [])
     up_imported = up_skipped = fz_imported = fz_skipped = 0
 
+    def _zone_exists(row) -> bool:
+        return scope != ConfigScope.zone or server.zone_id in (row.zone_ids or [])
+
     for addr in plain:
-        exists = session.exec(
+        candidates = session.exec(
             select(Upstream).where(
                 Upstream.address == addr,
                 Upstream.scope == scope,
-                Upstream.zone_id == zone_id,
                 Upstream.server_id == target_server_id,
             )
-        ).first()
-        if exists:
+        ).all()
+        if any(_zone_exists(u) for u in candidates):
             up_skipped += 1
             continue
         session.add(Upstream(
-            address=addr, scope=scope, zone_id=zone_id, server_id=target_server_id,
+            address=addr, scope=scope, zone_ids=cfg_zone_ids, server_id=target_server_id,
             description=f"Imported from {server.name}",
         ))
         up_imported += 1
 
     for domains, addrs in forwards.items():
         domains_str = " ".join(domains)
-        exists = session.exec(
+        candidates = session.exec(
             select(ForwardZone).where(
                 ForwardZone.domains == domains_str,
                 ForwardZone.scope == scope,
-                ForwardZone.zone_id == zone_id,
                 ForwardZone.server_id == target_server_id,
             )
-        ).first()
-        if exists:
+        ).all()
+        if any(_zone_exists(f) for f in candidates):
             fz_skipped += 1
             continue
         session.add(ForwardZone(
             domains=domains_str, upstreams="\n".join(addrs), scope=scope,
-            zone_id=zone_id, server_id=target_server_id,
+            zone_ids=cfg_zone_ids, server_id=target_server_id,
             description=f"Imported from {server.name}",
         ))
         fz_imported += 1
