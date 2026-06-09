@@ -11,6 +11,7 @@ const forwardZones = ref([])
 const zones = ref([])
 const servers = ref([])
 
+const KIND_LABELS = { upstream: 'Upstream', bootstrap: 'Bootstrap', fallback: 'Fallback', private: 'Private resolver' }
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || `#${id}`
 const zoneNames = (ids) => (ids || []).map(zoneName).join(', ') || '—'
 const serverName = (id) => servers.value.find((s) => s.id === id)?.name || '—'
@@ -36,8 +37,8 @@ const upError = ref('')
 function openUp(u) {
   editUp.value = u
   upForm.value = u
-    ? { address: u.address, scope: u.scope, zone_ids: [...(u.zone_ids || [])], server_id: u.server_id, enabled: u.enabled, description: u.description || '' }
-    : { address: '', scope: 'global', zone_ids: [], server_id: null, enabled: true, description: '' }
+    ? { address: u.address, kind: u.kind, scope: u.scope, zone_ids: [...(u.zone_ids || [])], server_id: u.server_id, enabled: u.enabled, description: u.description || '' }
+    : { address: '', kind: 'upstream', scope: 'global', zone_ids: [], server_id: null, enabled: true, description: '' }
   upError.value = ''
   showUp.value = true
 }
@@ -101,14 +102,15 @@ onMounted(load)
     <!-- Upstreams -->
     <div class="card" style="margin-bottom:24px">
       <div class="card-header">
-        <h2>Upstream DNS servers</h2>
-        <button v-if="auth.isEditor" class="btn btn-primary btn-sm" @click="openUp(null)">+ Add upstream</button>
+        <h2>DNS servers</h2>
+        <button v-if="auth.isEditor" class="btn btn-primary btn-sm" @click="openUp(null)">+ Add DNS server</button>
       </div>
       <table>
-        <thead><tr><th>Address</th><th>Scope</th><th>Applies to</th><th>Enabled</th><th></th></tr></thead>
+        <thead><tr><th>Address</th><th>Type</th><th>Scope</th><th>Applies to</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="u in upstreams" :key="u.id">
             <td class="mono"><strong>{{ u.address }}</strong><div v-if="u.description" class="muted">{{ u.description }}</div></td>
+            <td><span class="badge global">{{ KIND_LABELS[u.kind] || u.kind }}</span></td>
             <td><span class="badge" :class="scopeBadge(u.scope)">{{ u.scope }}</span></td>
             <td>{{ target(u) }}</td>
             <td><span class="badge" :class="u.enabled ? 'synced' : 'offline'">{{ u.enabled ? 'on' : 'off' }}</span></td>
@@ -118,7 +120,7 @@ onMounted(load)
             </td>
             <td v-else></td>
           </tr>
-          <tr v-if="!upstreams.length"><td colspan="5" class="empty">No upstreams defined. Servers keep their own config.</td></tr>
+          <tr v-if="!upstreams.length"><td colspan="6" class="empty">No DNS servers defined. Servers keep their own config.</td></tr>
         </tbody>
       </table>
     </div>
@@ -151,8 +153,17 @@ onMounted(load)
   </div>
 
   <!-- Upstream modal -->
-  <Modal v-if="showUp" :title="editUp ? 'Edit upstream' : 'Add upstream'" @close="showUp = false">
+  <Modal v-if="showUp" :title="editUp ? 'Edit DNS server' : 'Add DNS server'" @close="showUp = false">
     <div v-if="upError" class="alert alert-error">{{ upError }}</div>
+    <div class="form-row">
+      <label>Type</label>
+      <select v-model="upForm.kind">
+        <option value="upstream">Upstream — resolves all queries</option>
+        <option value="bootstrap">Bootstrap — resolves the upstream hostnames (DoH/DoT)</option>
+        <option value="fallback">Fallback — used when upstreams fail/time out</option>
+        <option value="private">Private resolver — reverse DNS for local clients</option>
+      </select>
+    </div>
     <div class="form-row">
       <label>Address</label>
       <input v-model="upForm.address" placeholder="1.1.1.1  or  https://dns.google/dns-query" />

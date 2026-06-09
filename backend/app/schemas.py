@@ -3,7 +3,15 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from .models import ConfigScope, InstallMethod, ProvisionStatus, RecordScope, Role, SyncStatus
+from .models import (
+    ConfigScope,
+    DnsServerKind,
+    InstallMethod,
+    ProvisionStatus,
+    RecordScope,
+    Role,
+    SyncStatus,
+)
 
 
 # ---- Auth ----
@@ -153,6 +161,7 @@ class RecordUpdate(BaseModel):
 class UpstreamRead(BaseModel):
     id: int
     address: str
+    kind: DnsServerKind
     scope: ConfigScope
     zone_ids: list[int]
     server_id: Optional[int]
@@ -165,6 +174,7 @@ class UpstreamRead(BaseModel):
 
 class UpstreamCreate(BaseModel):
     address: str
+    kind: DnsServerKind = DnsServerKind.upstream
     scope: ConfigScope = ConfigScope.global_
     zone_ids: list[int] = []
     server_id: Optional[int] = None
@@ -174,6 +184,7 @@ class UpstreamCreate(BaseModel):
 
 class UpstreamUpdate(BaseModel):
     address: Optional[str] = None
+    kind: Optional[DnsServerKind] = None
     scope: Optional[ConfigScope] = None
     zone_ids: Optional[list[int]] = None
     server_id: Optional[int] = None

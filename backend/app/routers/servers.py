@@ -6,7 +6,7 @@ from sqlmodel import select
 from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
 from ..deps import CurrentUser, RequireEditor, SessionDep
-from ..models import ConfigScope, DNSRecord, ForwardZone, RecordScope, Server, Upstream, Zone
+from ..models import ConfigScope, DnsServerKind, DNSRecord, ForwardZone, RecordScope, Server, Upstream, Zone
 from ..schemas import ServerCreate, ServerRead, ServerUpdate
 from ..security import decrypt_secret, encrypt_secret
 
@@ -36,6 +36,16 @@ def _parse_upstreams(entries: list[str]) -> tuple[list[str], dict[tuple[str, ...
                 if addr not in plain:
                     plain.append(addr)
     return plain, forwards
+
+
+def _plain_list(entries) -> list[str]:
+    """Flatten a plain address list (bootstrap/fallback/private), ignoring blanks."""
+    out: list[str] = []
+    for raw in entries or []:
+        for addr in str(raw).split():
+            if addr and not addr.startswith("[") and addr not in out:
+                out.append(addr)
+    return out
 
 
 def _validate_zone(session, zone_id):
@@ -191,27 +201,35 @@ async def import_settings(
         await client.aclose()
 
     plain, forwards = _parse_upstreams(info.get("upstream_dns") or [])
+    kind_addresses = {
+        DnsServerKind.upstream: plain,
+        DnsServerKind.bootstrap: _plain_list(info.get("bootstrap_dns")),
+        DnsServerKind.fallback: _plain_list(info.get("fallback_dns")),
+        DnsServerKind.private: _plain_list(info.get("local_ptr_upstreams")),
+    }
     up_imported = up_skipped = fz_imported = fz_skipped = 0
 
     def _zone_exists(row) -> bool:
         return scope != ConfigScope.zone or server.zone_id in (row.zone_ids or [])
 
-    for addr in plain:
-        candidates = session.exec(
-            select(Upstream).where(
-                Upstream.address == addr,
-                Upstream.scope == scope,
-                Upstream.server_id == target_server_id,
-            )
-        ).all()
-        if any(_zone_exists(u) for u in candidates):
-            up_skipped += 1
-            continue
-        session.add(Upstream(
-            address=addr, scope=scope, zone_ids=cfg_zone_ids, server_id=target_server_id,
-            description=f"Imported from {server.name}",
-        ))
-        up_imported += 1
+    for kind, addrs in kind_addresses.items():
+        for addr in addrs:
+            candidates = session.exec(
+                select(Upstream).where(
+                    Upstream.address == addr,
+                    Upstream.kind == kind,
+                    Upstream.scope == scope,
+                    Upstream.server_id == target_server_id,
+                )
+            ).all()
+            if any(_zone_exists(u) for u in candidates):
+                up_skipped += 1
+                continue
+            session.add(Upstream(
+                address=addr, kind=kind, scope=scope, zone_ids=cfg_zone_ids,
+                server_id=target_server_id, description=f"Imported from {server.name}",
+            ))
+            up_imported += 1
 
     for domains, addrs in forwards.items():
         domains_str = " ".join(domains)
@@ -237,6 +255,21 @@ async def import_settings(
         "upstreams_imported": up_imported, "upstreams_skipped": up_skipped,
         "forward_zones_imported": fz_imported, "forward_zones_skipped": fz_skipped,
         "scope": scope.value,
+    }
+
+
+@router.get("/{server_id}/credentials")
+def get_credentials(server_id: int, _: RequireEditor, session: SessionDep):
+    """Reveal the stored AdGuard login for this server (e.g. a generated one from
+    provisioning). Editor-only; the password is decrypted on demand."""
+    server = session.get(Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return {
+        "username": server.username,
+        "password": decrypt_secret(server.password_enc),
+        "has_password": bool(server.password_enc),
+        "url": server.url,
     }
 
 

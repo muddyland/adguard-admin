@@ -21,6 +21,11 @@ const importScope = ref('global')
 const settingsTarget = ref(null)
 const settingsScope = ref('global')
 const importing = ref(false)
+// Credentials modal
+const credsTarget = ref(null)
+const creds = ref(null)
+const credsReveal = ref(false)
+const credsCopied = ref('')
 
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || 'Unzoned'
 
@@ -120,6 +125,22 @@ async function runImportSettings() {
   }
 }
 
+async function openCreds(s) {
+  credsTarget.value = s
+  creds.value = null
+  credsReveal.value = false
+  credsCopied.value = ''
+  creds.value = (await api.get(`/servers/${s.id}/credentials`)).data
+}
+
+async function copyCred(text, which) {
+  try {
+    await navigator.clipboard.writeText(text)
+    credsCopied.value = which
+    setTimeout(() => (credsCopied.value = ''), 1500)
+  } catch { /* clipboard blocked */ }
+}
+
 async function remove(s) {
   if (!confirm(`Delete server "${s.name}"?`)) return
   await api.delete(`/servers/${s.id}`)
@@ -183,6 +204,7 @@ onMounted(load)
                   <button class="menu-item" :disabled="syncingId === s.id" @click="sync(s)">
                     {{ syncingId === s.id ? 'Syncing…' : 'Sync now' }}
                   </button>
+                  <button class="menu-item" @click="openCreds(s)">Show credentials</button>
                   <div class="menu-divider"></div>
                   <button class="menu-item" @click="openImport(s)">Import records</button>
                   <button class="menu-item" @click="openImportSettings(s)">Import DNS settings</button>
@@ -287,6 +309,37 @@ onMounted(load)
       <button class="btn btn-primary" :disabled="importing" @click="runImport">
         <span v-if="importing" class="spinner"></span><span>Import</span>
       </button>
+    </template>
+  </Modal>
+
+  <Modal v-if="credsTarget" :title="`Credentials — ${credsTarget.name}`" @close="credsTarget = null">
+    <p class="muted" style="margin-top:0">AdGuard Home login the admin app uses for this server. Open its UI at
+      <a :href="creds?.url" target="_blank" rel="noopener">{{ creds?.url }}</a>.</p>
+    <template v-if="creds">
+      <div class="form-row">
+        <label>Username</label>
+        <div class="flex gap-between">
+          <span class="mono">{{ creds.username || '— none set —' }}</span>
+          <button v-if="creds.username" class="btn btn-sm" @click="copyCred(creds.username, 'user')">
+            {{ credsCopied === 'user' ? 'Copied!' : 'Copy' }}
+          </button>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Password</label>
+        <div v-if="creds.has_password" class="flex gap-between">
+          <span class="mono">{{ credsReveal ? creds.password : '••••••••••••' }}</span>
+          <div class="flex" style="gap:6px">
+            <button class="btn btn-sm" @click="credsReveal = !credsReveal">{{ credsReveal ? 'Hide' : 'Reveal' }}</button>
+            <button class="btn btn-sm" @click="copyCred(creds.password, 'pass')">{{ credsCopied === 'pass' ? 'Copied!' : 'Copy' }}</button>
+          </div>
+        </div>
+        <span v-else class="muted">No password stored for this server.</span>
+      </div>
+    </template>
+    <div v-else class="muted">Loading…</div>
+    <template #footer>
+      <button class="btn btn-primary" @click="credsTarget = null">Close</button>
     </template>
   </Modal>
 

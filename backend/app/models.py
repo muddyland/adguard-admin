@@ -28,6 +28,14 @@ class ConfigScope(str, Enum):
     server = "server"    # a single server
 
 
+class DnsServerKind(str, Enum):
+    """Which AdGuard DNS list a server address belongs to."""
+    upstream = "upstream"     # -> upstream_dns
+    bootstrap = "bootstrap"   # -> bootstrap_dns
+    fallback = "fallback"     # -> fallback_dns
+    private = "private"       # -> local_ptr_upstreams (private reverse-DNS resolvers)
+
+
 class SyncStatus(str, Enum):
     unknown = "unknown"
     online = "online"
@@ -123,9 +131,11 @@ class DNSRecord(SQLModel, table=True):
 # DNS settings: upstream servers & per-domain forward zones
 # --------------------------------------------------------------------------- #
 class Upstream(SQLModel, table=True):
-    """A general upstream DNS server (e.g. 1.1.1.1, https://dns.google/dns-query)."""
+    """A DNS server address for one of AdGuard's lists (upstream / bootstrap /
+    fallback / private), scoped global / zone / server."""
     id: Optional[int] = Field(default=None, primary_key=True)
     address: str
+    kind: DnsServerKind = Field(default=DnsServerKind.upstream, index=True)
     scope: ConfigScope = Field(default=ConfigScope.global_)
     zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)

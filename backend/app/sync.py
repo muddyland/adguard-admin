@@ -20,7 +20,16 @@ from .adguard_client import AdGuardClient, AdGuardError, Rewrite
 from .certs import verify_for
 from .config import settings
 from .database import engine
-from .models import ConfigScope, DNSRecord, ForwardZone, RecordScope, Server, SyncStatus, Upstream
+from .models import (
+    ConfigScope,
+    DnsServerKind,
+    DNSRecord,
+    ForwardZone,
+    RecordScope,
+    Server,
+    SyncStatus,
+    Upstream,
+)
 from .security import decrypt_secret
 
 logger = logging.getLogger("adguard_admin.sync")
@@ -60,17 +69,31 @@ def _scope_matches(item, server: Server) -> bool:
     return False
 
 
+def _dedupe(entries: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in entries:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
+def _addresses_of_kind(session: Session, server: Server, kind: DnsServerKind) -> list[str]:
+    """Plain matching addresses for a given DNS server kind (no forward zones)."""
+    rows = session.exec(
+        select(Upstream).where(Upstream.enabled == True, Upstream.kind == kind)  # noqa: E712
+    ).all()
+    return _dedupe([u.address.strip() for u in rows if _scope_matches(u, server) and u.address.strip()])
+
+
 def desired_upstreams_for_server(session: Session, server: Server) -> list[str]:
     """Build the AdGuard upstream_dns list: general upstreams + forward-zone entries.
 
     General entries are plain addresses; forward zones render to AdGuard's
     per-domain syntax, e.g. [/internal.lan/corp.lan/]10.0.0.53.
     """
-    entries: list[str] = []
-
-    for u in session.exec(select(Upstream).where(Upstream.enabled == True)).all():  # noqa: E712
-        if _scope_matches(u, server) and u.address.strip():
-            entries.append(u.address.strip())
+    entries: list[str] = _addresses_of_kind(session, server, DnsServerKind.upstream)
 
     for fz in session.exec(select(ForwardZone).where(ForwardZone.enabled == True)).all():  # noqa: E712
         if not _scope_matches(fz, server):
@@ -83,14 +106,7 @@ def desired_upstreams_for_server(session: Session, server: Server) -> list[str]:
         for addr in upstreams:
             entries.append(prefix + addr)
 
-    # De-dupe while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for e in entries:
-        if e not in seen:
-            seen.add(e)
-            out.append(e)
-    return out
+    return _dedupe(entries)
 
 
 async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
@@ -127,18 +143,30 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         result.deleted = [f"{r.domain} -> {r.answer}" for r in to_delete]
         result.status = SyncStatus.online
 
-        # Optionally reconcile upstream DNS config (opt-in per server). We only
-        # push when there's a non-empty desired set, so we never blank out a
-        # server's upstreams just because nothing is defined here.
+        # Optionally reconcile DNS config (opt-in per server): upstream_dns,
+        # bootstrap_dns, fallback_dns and local_ptr_upstreams (private resolvers).
+        # We only push a list when its desired set is non-empty, so we never blank
+        # out a server's config just because nothing is defined here.
         upstreams_in_sync = True
         if server.manage_upstreams:
-            desired_up = desired_upstreams_for_server(session, server)
-            if desired_up:
-                current_up = (await client.dns_info()).get("upstream_dns") or []
-                if set(current_up) != set(desired_up):
-                    upstreams_in_sync = False
-                    if not dry_run:
-                        await client.set_upstreams(desired_up)
+            info = await client.dns_info()
+            desired_lists = {
+                "upstream_dns": desired_upstreams_for_server(session, server),
+                "bootstrap_dns": _addresses_of_kind(session, server, DnsServerKind.bootstrap),
+                "fallback_dns": _addresses_of_kind(session, server, DnsServerKind.fallback),
+                "local_ptr_upstreams": _addresses_of_kind(session, server, DnsServerKind.private),
+            }
+            payload: dict = {}
+            for key, desired_vals in desired_lists.items():
+                if desired_vals and set(info.get(key) or []) != set(desired_vals):
+                    payload[key] = desired_vals
+            # Ensure private resolvers actually take effect when we set them.
+            if "local_ptr_upstreams" in payload:
+                payload["use_private_ptr_resolvers"] = True
+            if payload:
+                upstreams_in_sync = False
+                if not dry_run:
+                    await client.set_dns_config(payload)
         result.upstreams_changed = not upstreams_in_sync
 
         server.status = SyncStatus.online

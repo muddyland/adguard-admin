@@ -13,7 +13,7 @@ engine = create_engine(settings.database_url, echo=False, connect_args=connect_a
 _ADDED_COLUMNS = {
     "server": {"tls_cert": "TEXT", "manage_upstreams": "BOOLEAN DEFAULT 0"},
     "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'"},
-    "upstream": {"zone_ids": "TEXT DEFAULT '[]'"},
+    "upstream": {"zone_ids": "TEXT DEFAULT '[]'", "kind": "TEXT DEFAULT 'upstream'"},
     "forwardzone": {"zone_ids": "TEXT DEFAULT '[]'"},
 }
 

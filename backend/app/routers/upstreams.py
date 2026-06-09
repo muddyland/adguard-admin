@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlmodel import select
 
 from ..deps import CurrentUser, RequireEditor, SessionDep
-from ..models import ConfigScope, Server, Upstream, Zone
+from ..models import ConfigScope, DnsServerKind, Server, Upstream, Zone
 from ..schemas import UpstreamCreate, UpstreamRead, UpstreamUpdate
 
 router = APIRouter(prefix="/api/upstreams", tags=["upstreams"])
@@ -26,11 +26,14 @@ def _validate_scope(session, scope: ConfigScope, zone_ids, server_id):
 def list_upstreams(
     _: CurrentUser,
     session: SessionDep,
+    kind: DnsServerKind | None = Query(default=None),
     scope: ConfigScope | None = Query(default=None),
     zone_id: int | None = Query(default=None),
     server_id: int | None = Query(default=None),
 ):
     stmt = select(Upstream)
+    if kind is not None:
+        stmt = stmt.where(Upstream.kind == kind)
     if scope is not None:
         stmt = stmt.where(Upstream.scope == scope)
     if server_id is not None:
@@ -46,6 +49,7 @@ def create_upstream(payload: UpstreamCreate, _: RequireEditor, session: SessionD
     _validate_scope(session, payload.scope, payload.zone_ids, payload.server_id)
     up = Upstream(
         address=payload.address.strip(),
+        kind=payload.kind,
         scope=payload.scope,
         zone_ids=sorted(set(payload.zone_ids)) if payload.scope == ConfigScope.zone else [],
         server_id=payload.server_id if payload.scope == ConfigScope.server else None,

@@ -83,15 +83,14 @@ class AdGuardClient:
         except httpx.HTTPError as exc:
             raise AdGuardError(f"dns_info failed: {exc}") from exc
 
-    async def set_upstreams(self, upstream_dns: list[str]) -> None:
-        """Partial update of DNS config — only the upstream_dns list."""
+    async def set_dns_config(self, config: dict) -> None:
+        """Partial update of DNS config (only the keys provided), e.g.
+        upstream_dns / bootstrap_dns / fallback_dns / local_ptr_upstreams."""
         try:
-            resp = await self._client.post(
-                "/control/dns_config", json={"upstream_dns": upstream_dns}
-            )
+            resp = await self._client.post("/control/dns_config", json=config)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
-            raise AdGuardError(f"set upstreams failed: {exc}") from exc
+            raise AdGuardError(f"set dns config failed: {exc}") from exc
 
     async def list_rewrites(self) -> list[Rewrite]:
         try:
