@@ -18,6 +18,7 @@ from .routers import (
     forward_zones,
     metrics,
     provision,
+    proxy,
     records,
     servers,
     sync,
@@ -81,6 +82,7 @@ app.include_router(provision.router)
 app.include_router(metrics.router)
 app.include_router(upstreams.router)
 app.include_router(forward_zones.router)
+app.include_router(proxy.router)
 
 
 @app.get("/api/health")

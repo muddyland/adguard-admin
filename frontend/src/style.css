@@ -263,3 +263,16 @@ input:focus, select:focus, textarea:focus {
 .zone-opt input { width: auto; }
 .zone-picker-actions { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; }
 .zone-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+
+/* ---------------- Embedded UI (iframe) modal ---------------- */
+.ui-frame-wrap {
+  background: var(--card); border-radius: 12px; width: 94vw; height: 90vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+.ui-frame-header {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.ui-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; }
+.ui-frame-note { flex: 0 0 auto; padding: 8px 16px; border-top: 1px solid var(--border); font-size: 12px; }

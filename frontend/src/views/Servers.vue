@@ -27,6 +27,27 @@ const credsTarget = ref(null)
 const creds = ref(null)
 const credsReveal = ref(false)
 const credsCopied = ref('')
+// Embedded AdGuard UI modal
+const uiTarget = ref(null)
+const uiSrc = ref('')
+const uiError = ref('')
+
+function openTab(s) {
+  window.open(s.url, '_blank', 'noopener')
+}
+
+async function openUi(s) {
+  uiError.value = ''
+  uiSrc.value = ''
+  uiTarget.value = s
+  try {
+    // Mint the path-scoped cookie, then point the iframe at the proxy.
+    const { data } = await api.post(`/servers/${s.id}/ui-session`)
+    uiSrc.value = data.src
+  } catch (e) {
+    uiError.value = e.response?.data?.detail || 'Could not start UI session'
+  }
+}
 
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || 'Unzoned'
 
@@ -205,7 +226,10 @@ onMounted(load)
             </td>
             <td class="muted">{{ fmt(s.last_synced) }}</td>
             <td class="row-actions">
+              <button class="btn btn-sm" @click="openUi(s)">Open UI</button>
               <ActionMenu>
+                <button class="menu-item" @click="openUi(s)">Open UI (embedded)</button>
+                <button class="menu-item" @click="openTab(s)">Open UI in new tab ↗</button>
                 <button class="menu-item" @click="test(s)">Test connection</button>
                 <template v-if="auth.isEditor">
                   <button class="menu-item" :disabled="syncingId === s.id" @click="sync(s)">
@@ -318,6 +342,26 @@ onMounted(load)
       </button>
     </template>
   </Modal>
+
+  <div v-if="uiTarget" class="modal-overlay" @click.self="uiTarget = null">
+    <div class="ui-frame-wrap">
+      <div class="ui-frame-header">
+        <strong>{{ uiTarget.name }}</strong>
+        <span class="muted mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ uiTarget.url }}</span>
+        <div class="flex" style="gap:8px;margin-left:auto">
+          <a class="btn btn-sm" :href="uiTarget.url" target="_blank" rel="noopener">Open in new tab ↗</a>
+          <button class="btn btn-sm" @click="uiTarget = null">Close</button>
+        </div>
+      </div>
+      <div v-if="uiError" class="alert alert-error" style="margin:12px">{{ uiError }}</div>
+      <iframe v-else-if="uiSrc" :src="uiSrc" class="ui-frame" title="AdGuard Home"></iframe>
+      <div v-else class="ui-frame" style="display:grid;place-items:center"><span class="muted">Starting session…</span></div>
+      <div class="ui-frame-note muted">
+        Proxied through AdGuard Admin with auto-login. If the panel stays blank, this instance’s UI
+        couldn’t be embedded — use <strong>Open in new tab</strong>.
+      </div>
+    </div>
+  </div>
 
   <Modal v-if="credsTarget" :title="`Credentials — ${credsTarget.name}`" @close="credsTarget = null">
     <p class="muted" style="margin-top:0">AdGuard Home login the admin app uses for this server. Open its UI at

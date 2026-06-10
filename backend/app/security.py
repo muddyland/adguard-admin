@@ -47,6 +47,21 @@ def generate_token(nbytes: int = 32) -> str:
     return secrets.token_urlsafe(nbytes)
 
 
+def create_proxy_token(server_id: int, user_id: int, minutes: int = 60) -> str:
+    """Short-lived token (carried in a path-scoped cookie) authorizing the UI proxy."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    payload = {"typ": "proxy", "psrv": server_id, "sub": str(user_id), "exp": expire}
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_proxy_token(token: str, server_id: int) -> bool:
+    try:
+        claims = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError:
+        return False
+    return claims.get("typ") == "proxy" and claims.get("psrv") == server_id
+
+
 # --------------------------------------------------------------------------- #
 # Fernet encryption for AdGuard server passwords at rest
 # --------------------------------------------------------------------------- #
