@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from './stores/auth'
 import { theme, toggleTheme } from './theme'
@@ -9,6 +9,9 @@ const router = useRouter()
 const auth = useAuth()
 
 const showShell = computed(() => route.name !== 'login' && auth.isAuthenticated)
+const navOpen = ref(false)
+// Close the mobile drawer on navigation.
+watch(() => route.fullPath, () => { navOpen.value = false })
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: '▤' },
@@ -30,9 +33,17 @@ function logout() {
 
 <template>
   <div v-if="showShell" class="layout">
-    <aside class="sidebar">
+    <!-- Mobile top bar with hamburger -->
+    <header class="mobile-topbar">
+      <button class="hamburger" aria-label="Menu" @click="navOpen = !navOpen">☰</button>
+      <img src="/icon.svg" class="brand-icon" alt="" />
+      <span style="font-weight:700">AdGuard Admin</span>
+    </header>
+    <div v-if="navOpen" class="nav-overlay" @click="navOpen = false"></div>
+
+    <aside class="sidebar" :class="{ open: navOpen }">
       <div class="brand">
-        <div class="logo">A</div>
+        <img src="/icon.svg" class="brand-icon" alt="" />
         <span>AdGuard Admin</span>
       </div>
       <nav class="nav">

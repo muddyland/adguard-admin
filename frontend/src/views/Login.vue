@@ -53,7 +53,7 @@ function oidcLogin() {
       {{ theme === 'dark' ? '☀' : '☾' }}
     </button>
     <div class="login-card">
-      <div class="login-logo"><div class="logo">A</div></div>
+      <div class="login-logo"><img src="/icon.svg" class="login-icon" alt="AdGuard Admin" /></div>
       <h1>AdGuard Admin</h1>
       <p class="login-sub">Sign in to manage your DNS fleet</p>
 

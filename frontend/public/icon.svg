@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AdGuard Admin">
+  <rect width="64" height="64" rx="14" fill="#67b279"/>
+  <path d="M32 11 L46 16.5 V30 C46 40 40 46 32 49 C24 46 18 40 18 30 V16.5 Z" fill="#fff"/>
+  <path d="M24 31 l6 6 l11 -13" fill="none" stroke="#4e9d61" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
