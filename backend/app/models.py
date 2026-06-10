@@ -125,6 +125,9 @@ class DNSRecord(SQLModel, table=True):
     zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     enabled: bool = True
     description: Optional[str] = None
+    # True for records the app auto-maintains (e.g. server hostnames -> IP).
+    # These are read-only in the UI and kept in sync by the reconcile loop.
+    managed: bool = False
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

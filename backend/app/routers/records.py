@@ -58,6 +58,8 @@ def update_record(record_id: int, payload: RecordUpdate, _: RequireEditor, sessi
     record = session.get(DNSRecord, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
+    if record.managed:
+        raise HTTPException(status_code=409, detail="This record is auto-managed from the servers list")
     data = payload.model_dump(exclude_unset=True)
     new_scope = data.get("scope", record.scope)
     new_zones = data.get("zone_ids", record.zone_ids)
@@ -84,5 +86,7 @@ def delete_record(record_id: int, _: RequireEditor, session: SessionDep):
     record = session.get(DNSRecord, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
+    if record.managed:
+        raise HTTPException(status_code=409, detail="This record is auto-managed; remove the server instead")
     session.delete(record)
     session.commit()

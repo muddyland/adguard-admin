@@ -17,7 +17,7 @@ _ADDED_COLUMNS = {
         "latest_version": "TEXT",
         "update_available": "BOOLEAN DEFAULT 0",
     },
-    "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'"},
+    "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'", "managed": "BOOLEAN DEFAULT 0"},
     "upstream": {"zone_ids": "TEXT DEFAULT '[]'", "kind": "TEXT DEFAULT 'upstream'"},
     "forwardzone": {"zone_ids": "TEXT DEFAULT '[]'"},
 }

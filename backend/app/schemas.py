@@ -134,6 +134,7 @@ class RecordRead(BaseModel):
     zone_ids: list[int]
     enabled: bool
     description: Optional[str]
+    managed: bool
     created_at: datetime
     updated_at: datetime
 

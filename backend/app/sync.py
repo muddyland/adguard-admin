@@ -9,8 +9,11 @@ retried on the next loop, so state converges automatically once they come back.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
+import socket
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -207,7 +210,86 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
     return result
 
 
+def _host_from_url(url: str) -> str | None:
+    try:
+        u = url if "://" in url else "//" + url
+        return urllib.parse.urlparse(u).hostname
+    except ValueError:
+        return None
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def reconcile_hostname_records() -> None:
+    """Auto-maintain global rewrites mapping each server's hostname URL to its IP,
+    so every server can resolve the others by name. Servers given by bare IP are
+    skipped. User-defined records of the same name are left untouched. Blocking
+    DNS lookups here are fine — this runs in a worker thread.
+    """
+    with Session(engine) as session:
+        servers = session.exec(select(Server)).all()
+        managed_hostnames: set[str] = set()
+        resolved: dict[str, str] = {}
+        for srv in servers:
+            host = _host_from_url(srv.url)
+            if not host or _is_ip(host):
+                continue
+            host = host.lower()
+            managed_hostnames.add(host)
+            try:
+                resolved[host] = socket.gethostbyname(host)
+            except OSError:
+                logger.debug("could not resolve server hostname %s", host)
+
+        autos = {r.domain: r for r in session.exec(
+            select(DNSRecord).where(DNSRecord.managed == True)  # noqa: E712
+        ).all()}
+        user_global = {r.domain for r in session.exec(
+            select(DNSRecord).where(DNSRecord.managed == False, DNSRecord.scope == RecordScope.global_)  # noqa: E712
+        ).all()}
+
+        changed = False
+        for host, ip in resolved.items():
+            if host in user_global:
+                continue  # respect an explicit user record for this name
+            rec = autos.get(host)
+            if rec is None:
+                session.add(DNSRecord(
+                    domain=host, answer=ip, scope=RecordScope.global_, zone_ids=[],
+                    enabled=True, managed=True, description="Auto-registered from servers list",
+                ))
+                changed = True
+            elif rec.answer != ip:
+                rec.answer = ip
+                rec.updated_at = datetime.now(timezone.utc)
+                session.add(rec)
+                changed = True
+
+        # Drop auto records whose hostname is no longer a server (or became an IP).
+        for domain, rec in autos.items():
+            if domain not in managed_hostnames:
+                session.delete(rec)
+                changed = True
+
+        if changed:
+            session.commit()
+
+
 async def reconcile_all(*, dry_run: bool = False, only_server_id: int | None = None) -> list[ServerSyncResult]:
+    # Refresh server-hostname records first so they're part of this cycle's
+    # desired state. Run in a thread — gethostbyname blocks.
+    if not dry_run:
+        try:
+            await asyncio.to_thread(reconcile_hostname_records)
+        except Exception:
+            logger.exception("hostname record reconcile failed")
+
     with Session(engine) as session:
         stmt = select(Server).where(Server.enabled == True)  # noqa: E712
         if only_server_id is not None:

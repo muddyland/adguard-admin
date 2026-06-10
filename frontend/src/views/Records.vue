@@ -99,7 +99,11 @@ onMounted(load)
         <thead><tr><th>Domain</th><th>Answer</th><th>Scope</th><th>Zones</th><th>Enabled</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in filtered" :key="r.id">
-            <td class="mono"><strong>{{ r.domain }}</strong><div v-if="r.description" class="muted">{{ r.description }}</div></td>
+            <td class="mono">
+              <strong>{{ r.domain }}</strong>
+              <span v-if="r.managed" class="badge global" style="margin-left:6px" title="Auto-registered from the servers list">auto</span>
+              <div v-if="r.description" class="muted">{{ r.description }}</div>
+            </td>
             <td class="mono">{{ r.answer }}</td>
             <td><span class="badge" :class="r.scope === 'global' ? 'global' : 'zone'">{{ r.scope }}</span></td>
             <td>
@@ -113,9 +117,12 @@ onMounted(load)
               <span v-else class="badge offline">off</span>
             </td>
             <td class="row-actions" v-if="auth.isEditor">
-              <button class="btn btn-sm" @click="toggle(r)">{{ r.enabled ? 'Disable' : 'Enable' }}</button>
-              <button class="btn btn-sm" @click="openEdit(r)">Edit</button>
-              <button class="btn btn-sm btn-danger" @click="remove(r)">Delete</button>
+              <span v-if="r.managed" class="muted">auto-managed</span>
+              <template v-else>
+                <button class="btn btn-sm" @click="toggle(r)">{{ r.enabled ? 'Disable' : 'Enable' }}</button>
+                <button class="btn btn-sm" @click="openEdit(r)">Edit</button>
+                <button class="btn btn-sm btn-danger" @click="remove(r)">Delete</button>
+              </template>
             </td>
             <td v-else></td>
           </tr>
