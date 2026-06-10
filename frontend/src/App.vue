@@ -16,6 +16,7 @@ const nav = [
   { to: '/servers', label: 'Servers', icon: '⛁' },
   { to: '/records', label: 'DNS Records', icon: '⚲' },
   { to: '/dns-settings', label: 'DNS Settings', icon: '⚙' },
+  { to: '/query-log', label: 'Query Log', icon: '☰' },
 ]
 const editorNav = [
   { to: '/provision', label: 'Provisioning', icon: '✦' },

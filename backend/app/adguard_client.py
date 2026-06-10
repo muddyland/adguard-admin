@@ -84,6 +84,15 @@ class AdGuardClient:
         except httpx.HTTPError as exc:
             raise AdGuardError(f"version check failed: {exc}") from exc
 
+    async def query_log(self, params: dict) -> dict:
+        """GET /control/querylog — recent DNS queries. Supports limit/search/response_status."""
+        try:
+            resp = await self._client.get("/control/querylog", params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise AdGuardError(f"query log failed: {exc}") from exc
+
     async def dns_info(self) -> dict:
         """GET /control/dns_info — current DNS config (upstreams, bootstrap, etc.)."""
         try:

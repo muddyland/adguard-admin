@@ -16,6 +16,26 @@ const error = ref('')
 const testResult = ref({})
 const syncingId = ref(null)
 const msg = ref('')
+// Sorting (defaults to zone)
+const sortKey = ref('zone')
+const sortDir = ref(1)
+function sortBy(key) {
+  if (sortKey.value === key) sortDir.value *= -1
+  else { sortKey.value = key; sortDir.value = 1 }
+}
+const sortArrow = (key) => (sortKey.value === key ? (sortDir.value === 1 ? ' ▲' : ' ▼') : '')
+const sortedServers = computed(() => {
+  const val = (s) =>
+    sortKey.value === 'zone' ? zoneName(s.zone_id)
+    : sortKey.value === 'status' ? s.status
+    : sortKey.value === 'version' ? (s.version || '')
+    : s.name
+  return [...servers.value].sort((a, b) => {
+    const av = String(val(a)).toLowerCase(), bv = String(val(b)).toLowerCase()
+    if (av !== bv) return av < bv ? -sortDir.value : sortDir.value
+    return a.name.localeCompare(b.name)  // stable tiebreak by name
+  })
+})
 // Standalone "import from existing server" modals
 const importTarget = ref(null)
 const importScope = ref('global')
@@ -195,9 +215,15 @@ onMounted(load)
     <div v-if="msg" class="alert alert-success" @click="msg = ''">{{ msg }}</div>
     <div class="card">
       <table>
-        <thead><tr><th>Status</th><th>Server</th><th>Zone</th><th>Version</th><th>Sync</th><th>Prune</th><th>Last synced</th><th></th></tr></thead>
+        <thead><tr>
+          <th style="cursor:pointer" @click="sortBy('status')">Status{{ sortArrow('status') }}</th>
+          <th style="cursor:pointer" @click="sortBy('name')">Server{{ sortArrow('name') }}</th>
+          <th style="cursor:pointer" @click="sortBy('zone')">Zone{{ sortArrow('zone') }}</th>
+          <th style="cursor:pointer" @click="sortBy('version')">Version{{ sortArrow('version') }}</th>
+          <th>Sync</th><th>Prune</th><th>Last synced</th><th></th>
+        </tr></thead>
         <tbody>
-          <tr v-for="s in servers" :key="s.id">
+          <tr v-for="s in sortedServers" :key="s.id">
             <td><span class="badge" :class="s.status"><span class="dot"></span>{{ s.status }}</span></td>
             <td>
               <strong>{{ s.name }}</strong>
