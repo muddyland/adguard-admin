@@ -276,6 +276,7 @@ install_docker() {{
     adguard/adguardhome >/dev/null
   SETUP_PORT="$HTTP_PORT"          # host port mapped to the container's 3000
   WEB_PORT=3000                    # keep the container's web port at 3000
+  TLS_PORT=443                     # container-side https port (host $HTTPS_PORT maps to it)
   MGMT_PORT="$HTTP_PORT"           # reachable on the host
   CERT_FILE="/certs/cert.pem"; KEY_FILE="/certs/key.pem"
 }}
@@ -287,6 +288,7 @@ install_bare() {{
   fi
   SETUP_PORT=3000                  # first-run wizard listens on 3000
   WEB_PORT="$HTTP_PORT"            # move the admin UI to the desired port
+  TLS_PORT="$HTTPS_PORT"          # bare-metal listens directly on the https port
   MGMT_PORT="$HTTP_PORT"
   CERT_FILE="$CERT_PATH"; KEY_FILE="$KEY_PATH"
 }}
@@ -323,11 +325,15 @@ if [ "$AUTH_OK" != "1" ]; then
 fi
 
 if [ "$SSL" = "true" ]; then
-  green "Enabling TLS on the server..."
-  curl -fsS -u "$ADMIN_USER:$ADMIN_PASSWORD" -X POST "http://127.0.0.1:$MGMT_PORT/control/tls/configure" \\
-    -H 'Content-Type: application/json' \\
-    -d "{{\\"enabled\\":true,\\"server_name\\":\\"$CONNECT_ADDRESS\\",\\"force_https\\":false,\\"port_https\\":$HTTPS_PORT,\\"port_dns_over_tls\\":853,\\"port_dns_over_quic\\":0,\\"certificate_path\\":\\"$CERT_FILE\\",\\"private_key_path\\":\\"$KEY_FILE\\",\\"certificate_chain\\":\\"\\",\\"private_key\\":\\"\\",\\"private_key_saved\\":false}}" >/dev/null \\
-    || red "TLS configure failed — verify cert paths and that port $HTTPS_PORT is free."
+  green "Enabling TLS on the server (https on container port $TLS_PORT -> host $HTTPS_PORT)..."
+  TLS_BODY="{{\\"enabled\\":true,\\"server_name\\":\\"$CONNECT_ADDRESS\\",\\"force_https\\":false,\\"port_https\\":$TLS_PORT,\\"port_dns_over_tls\\":853,\\"port_dns_over_quic\\":0,\\"certificate_path\\":\\"$CERT_FILE\\",\\"private_key_path\\":\\"$KEY_FILE\\",\\"certificate_chain\\":\\"\\",\\"private_key\\":\\"\\",\\"private_key_saved\\":false}}"
+  TLS_OUT="$(curl -sS -u "$ADMIN_USER:$ADMIN_PASSWORD" -X POST "http://127.0.0.1:$MGMT_PORT/control/tls/configure" -H 'Content-Type: application/json' -d "$TLS_BODY" -w '\\n[HTTP %{{http_code}}]' 2>&1)"
+  case "$TLS_OUT" in
+    *"[HTTP 200]"*) green "TLS enabled." ;;
+    *) red "TLS configure failed: $TLS_OUT"
+       red "Not registering. Check the cert and that the https port doesn't clash with the web port."
+       exit 1 ;;
+  esac
 fi
 
 if [ -n "${{CONNECT_ADDRESS:-}}" ]; then ADDR="$CONNECT_ADDRESS"; else ADDR="$(hostname -I 2>/dev/null | awk '{{print $1}}')"; fi
