@@ -139,18 +139,19 @@ onMounted(async () => { await loadFilters(); await load() })
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Domain is the column you most want to read — let it wrap rather than clip. */
 .qlog .domain {
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-all;
 }
 /* Column widths: prioritise Domain, cap the noisy columns. */
 .qlog th:nth-child(1), .qlog td:nth-child(1) { width: 130px; }  /* Time */
 .qlog th:nth-child(2), .qlog td:nth-child(2) { width: 110px; }  /* Server */
-.qlog th:nth-child(3), .qlog td:nth-child(3) { width: 120px; }  /* Client */
-.qlog th:nth-child(4), .qlog td:nth-child(4) { width: 24%; }    /* Domain */
+.qlog th:nth-child(3), .qlog td:nth-child(3) { width: 130px; }  /* Client */
+.qlog th:nth-child(4), .qlog td:nth-child(4) { width: 34%; }    /* Domain */
 .qlog th:nth-child(5), .qlog td:nth-child(5) { width: 56px; }   /* Type */
 .qlog th:nth-child(6), .qlog td:nth-child(6) { width: 92px; }   /* Result */
-.qlog th:nth-child(7), .qlog td:nth-child(7) { width: 22%; }    /* Answer */
-.qlog th:nth-child(8), .qlog td:nth-child(8) { width: 18%; }    /* Upstream */
+.qlog th:nth-child(7), .qlog td:nth-child(7) { width: 30%; }    /* Answer */
+.qlog th:nth-child(8), .qlog td:nth-child(8) { width: 22%; }    /* Upstream */
 .qlog th:nth-child(9), .qlog td:nth-child(9) { width: 52px; }   /* ms */
 </style>
