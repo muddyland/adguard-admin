@@ -169,6 +169,8 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
 
 /* ---------------- Tables ---------------- */
 table { width: 100%; border-collapse: collapse; }
+/* While dragging a column edge, suppress text selection fleet-wide. */
+body.col-resizing { cursor: col-resize; user-select: none; }
 th {
   text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .03em;
   color: var(--text-muted); padding: 12px 16px; border-bottom: 1px solid var(--border);

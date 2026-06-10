@@ -24,6 +24,64 @@ const STATUSES = [
   ['whitelisted', 'Allowlisted'], ['safe_search', 'Safe search'],
 ]
 
+// Column definitions drive both the <colgroup> and header; widths (px) are
+// user-resizable and persisted. `align` right-aligns the ms column header.
+const COLUMNS = [
+  { key: 'time', label: 'Time', w: 130 },
+  { key: 'server', label: 'Server', w: 90 },
+  { key: 'client', label: 'Client', w: 130 },
+  { key: 'domain', label: 'Domain', w: 280 },
+  { key: 'type', label: 'Type', w: 60 },
+  { key: 'result', label: 'Result', w: 90 },
+  { key: 'answer', label: 'Answer', w: 220 },
+  { key: 'upstream', label: 'Upstream', w: 200 },
+  { key: 'ms', label: 'ms', w: 56, align: 'right' },
+]
+const STORAGE_KEY = 'qlog-col-widths-v1'
+
+function loadWidths() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY))
+    if (Array.isArray(saved) && saved.length === COLUMNS.length) return saved
+  } catch { /* ignore bad/legacy storage */ }
+  return COLUMNS.map((c) => c.w)
+}
+const widths = ref(loadWidths())
+const tableWidth = computed(() => widths.value.reduce((a, b) => a + b, 0))
+
+let resizing = null
+function startResize(e, i) {
+  const x = e.touches ? e.touches[0].clientX : e.clientX
+  resizing = { i, startX: x, startW: widths.value[i] }
+  window.addEventListener('mousemove', onResize)
+  window.addEventListener('mouseup', stopResize)
+  window.addEventListener('touchmove', onResize, { passive: false })
+  window.addEventListener('touchend', stopResize)
+  document.body.classList.add('col-resizing')
+  e.preventDefault()
+}
+function onResize(e) {
+  if (!resizing) return
+  const x = e.touches ? e.touches[0].clientX : e.clientX
+  const next = widths.value.slice()
+  next[resizing.i] = Math.max(44, resizing.startW + (x - resizing.startX))
+  widths.value = next
+  if (e.cancelable) e.preventDefault()
+}
+function stopResize() {
+  resizing = null
+  window.removeEventListener('mousemove', onResize)
+  window.removeEventListener('mouseup', stopResize)
+  window.removeEventListener('touchmove', onResize)
+  window.removeEventListener('touchend', stopResize)
+  document.body.classList.remove('col-resizing')
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(widths.value))
+}
+function resetWidths() {
+  widths.value = COLUMNS.map((c) => c.w)
+  localStorage.removeItem(STORAGE_KEY)
+}
+
 async function loadFilters() {
   const [z, s] = await Promise.all([api.get('/zones'), api.get('/servers')])
   zones.value = z.data
@@ -88,14 +146,23 @@ onMounted(async () => { await loadFilters(); await load() })
           <option :value="200">200</option><option :value="500">500</option>
         </select>
       </div>
-      <span class="muted">{{ entries.length }} shown · {{ meta.servers_queried }} servers</span>
+      <span class="muted">
+        {{ entries.length }} shown · {{ meta.servers_queried }} servers
+        <button class="link-btn" @click="resetWidths">reset columns</button>
+      </span>
     </div>
 
-    <div class="card">
-      <table class="qlog">
+    <div class="card qlog-scroll">
+      <table class="qlog" :style="{ width: tableWidth + 'px' }">
+        <colgroup>
+          <col v-for="(c, i) in COLUMNS" :key="c.key" :style="{ width: widths[i] + 'px' }" />
+        </colgroup>
         <thead><tr>
-          <th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th>
-          <th>Result</th><th>Answer</th><th>Upstream</th><th style="text-align:right">ms</th>
+          <th v-for="(c, i) in COLUMNS" :key="c.key" :style="c.align ? { textAlign: c.align } : null">
+            <span>{{ c.label }}</span>
+            <span v-if="i < COLUMNS.length - 1" class="col-resizer"
+                  @mousedown="startResize($event, i)" @touchstart="startResize($event, i)"></span>
+          </th>
         </tr></thead>
         <tbody>
           <tr v-for="(e, i) in entries" :key="i">
@@ -125,33 +192,46 @@ onMounted(async () => { await loadFilters(); await load() })
     </div>
     <p class="hint" style="margin-top:10px">
       Combined view shows the most recent {{ limit }} queries from each selected server, merged by time.
-      Hover a truncated cell to see its full value.
+      Drag a column edge to resize; hover a truncated cell to see its full value.
     </p>
   </div>
 </template>
 
 <style scoped>
-/* Fixed layout keeps long answers/upstreams from blowing out the Domain column. */
-.qlog { table-layout: fixed; width: 100%; }
+.qlog-scroll { overflow-x: auto; }
+/* Fixed layout + explicit col widths: long answers/upstreams clip instead of
+   blowing out the table, and column widths are driven by the <colgroup>. */
+.qlog { table-layout: fixed; }
 .qlog th, .qlog td { overflow: hidden; }
+.qlog th { position: relative; }
 .qlog .clip {
-  max-width: 0;            /* fixed layout distributes by the col widths below */
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 /* Domain is the column you most want to read — let it wrap rather than clip. */
 .qlog .domain {
   white-space: normal;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
-/* Column widths: prioritise Domain, cap the noisy columns. */
-.qlog th:nth-child(1), .qlog td:nth-child(1) { width: 130px; }  /* Time */
-.qlog th:nth-child(2), .qlog td:nth-child(2) { width: 110px; }  /* Server */
-.qlog th:nth-child(3), .qlog td:nth-child(3) { width: 130px; }  /* Client */
-.qlog th:nth-child(4), .qlog td:nth-child(4) { width: 34%; }    /* Domain */
-.qlog th:nth-child(5), .qlog td:nth-child(5) { width: 56px; }   /* Type */
-.qlog th:nth-child(6), .qlog td:nth-child(6) { width: 92px; }   /* Result */
-.qlog th:nth-child(7), .qlog td:nth-child(7) { width: 30%; }    /* Answer */
-.qlog th:nth-child(8), .qlog td:nth-child(8) { width: 22%; }    /* Upstream */
-.qlog th:nth-child(9), .qlog td:nth-child(9) { width: 52px; }   /* ms */
+/* Drag handle on the right edge of each header. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+}
+.col-resizer:hover { background: var(--accent, #67b279); opacity: 0.4; }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent, #67b279);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  margin-left: 10px;
+}
+.link-btn:hover { text-decoration: underline; }
 </style>
