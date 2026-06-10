@@ -305,6 +305,23 @@ curl -fsS -X POST "http://127.0.0.1:$SETUP_PORT/control/install/configure" \\
   -d "{{\\"web\\":{{\\"ip\\":\\"0.0.0.0\\",\\"port\\":$WEB_PORT}},\\"dns\\":{{\\"ip\\":\\"0.0.0.0\\",\\"port\\":$DNS_PORT}},\\"username\\":\\"$ADMIN_USER\\",\\"password\\":\\"$ADMIN_PASSWORD\\"}}" >/dev/null || true
 sleep 3
 
+# Verify the admin credentials are actually accepted before registering. If this
+# box was already set up, the configure call above is a no-op and these new
+# credentials won't match — registering anyway would make the admin app retry
+# bad logins and trip AdGuard's brute-force lockout (HTTP 429).
+green "Verifying admin credentials..."
+AUTH_OK=0
+for _ in $(seq 1 10); do
+  CODE="$(curl -fsS -o /dev/null -w '%{{http_code}}' -u "$ADMIN_USER:$ADMIN_PASSWORD" "http://127.0.0.1:$MGMT_PORT/control/dns_info" 2>/dev/null || true)"
+  if [ "$CODE" = "200" ]; then AUTH_OK=1; break; fi
+  sleep 2
+done
+if [ "$AUTH_OK" != "1" ]; then
+  red "AdGuard rejected the generated credentials (last HTTP $CODE)."
+  red "This usually means the box was already configured. Reinstall AdGuard Home (remove its config/volume) and re-run, or set the matching password under the server in AdGuard Admin. Not registering."
+  exit 1
+fi
+
 if [ "$SSL" = "true" ]; then
   green "Enabling TLS on the server..."
   curl -fsS -u "$ADMIN_USER:$ADMIN_PASSWORD" -X POST "http://127.0.0.1:$MGMT_PORT/control/tls/configure" \\

@@ -105,6 +105,9 @@ class Server(SQLModel, table=True):
     last_seen: Optional[datetime] = None
     last_synced: Optional[datetime] = None
     last_error: Optional[str] = None
+    # Set when auth fails / AdGuard rate-limits us; the loop skips the server
+    # until this passes so we don't worsen a brute-force lockout.
+    cooldown_until: Optional[datetime] = None
     # True once the desired state matches what's on the server.
     in_sync: bool = False
 

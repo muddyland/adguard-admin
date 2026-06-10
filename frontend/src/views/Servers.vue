@@ -229,6 +229,7 @@ onMounted(load)
               <strong>{{ s.name }}</strong>
               <span v-if="!s.enabled" class="badge offline" style="margin-left:6px">disabled</span>
               <div class="muted mono">{{ s.url }}</div>
+              <div v-if="s.last_error" class="hint" style="color:var(--red)">{{ s.last_error }}</div>
               <div v-if="testResult[s.id]" class="hint">
                 <span v-if="testResult[s.id].loading">Testing…</span>
                 <span v-else-if="testResult[s.id].ok" style="color:var(--green-dark)">✓ v{{ testResult[s.id].version }}, {{ testResult[s.id].rewrite_count }} rewrites</span>

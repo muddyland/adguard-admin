@@ -90,8 +90,10 @@ def update_server(server_id: int, payload: ServerUpdate, _: RequireEditor, sessi
         pw = data.pop("password")
         if pw:
             server.password_enc = encrypt_secret(pw)
+            server.cooldown_until = None  # creds changed — let it retry next cycle
     if "url" in data and data["url"]:
         data["url"] = data["url"].rstrip("/")
+        server.cooldown_until = None
     for key, value in data.items():
         setattr(server, key, value)
     session.add(server)

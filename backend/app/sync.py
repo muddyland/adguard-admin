@@ -15,7 +15,7 @@ import re
 import socket
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
@@ -184,16 +184,27 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         server.status = SyncStatus.online
         server.in_sync = not to_add and not to_delete and upstreams_in_sync
         server.last_error = None
+        server.cooldown_until = None  # healthy again
         if not dry_run:
             server.last_synced = datetime.now(timezone.utc)
 
     except AdGuardError as exc:
         logger.warning("reconcile failed for %s: %s", server.name, exc)
-        result.status = SyncStatus.offline
+        result.status = SyncStatus.error if exc.status_code in (401, 403, 429) else SyncStatus.offline
         result.error = str(exc)
-        server.status = SyncStatus.offline
         server.in_sync = False
-        server.last_error = str(exc)
+        if exc.status_code in (401, 403, 429):
+            # Auth rejected / rate-limited: back off so we don't deepen the lockout.
+            secs = exc.retry_after or (900 if exc.status_code == 429 else 300)
+            server.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=secs)
+            server.status = SyncStatus.error
+            if exc.status_code == 429:
+                server.last_error = f"Auth rate-limited by AdGuard (429); backing off ~{secs // 60}m. Check the server's credentials."
+            else:
+                server.last_error = f"Authentication failed (HTTP {exc.status_code}); retrying in ~{secs // 60}m. Check the server's credentials."
+        else:
+            server.status = SyncStatus.offline
+            server.last_error = str(exc)
     except Exception as exc:  # defensive: never let one server kill the loop
         logger.exception("unexpected error reconciling %s", server.name)
         result.status = SyncStatus.error
@@ -281,7 +292,9 @@ def reconcile_hostname_records() -> None:
             session.commit()
 
 
-async def reconcile_all(*, dry_run: bool = False, only_server_id: int | None = None) -> list[ServerSyncResult]:
+async def reconcile_all(
+    *, dry_run: bool = False, only_server_id: int | None = None, force: bool = False
+) -> list[ServerSyncResult]:
     # Refresh server-hostname records first so they're part of this cycle's
     # desired state. Run in a thread — gethostbyname blocks.
     if not dry_run:
@@ -290,6 +303,7 @@ async def reconcile_all(*, dry_run: bool = False, only_server_id: int | None = N
         except Exception:
             logger.exception("hostname record reconcile failed")
 
+    now = datetime.now(timezone.utc)
     with Session(engine) as session:
         stmt = select(Server).where(Server.enabled == True)  # noqa: E712
         if only_server_id is not None:
@@ -297,6 +311,13 @@ async def reconcile_all(*, dry_run: bool = False, only_server_id: int | None = N
         servers = session.exec(stmt).all()
         results: list[ServerSyncResult] = []
         for server in servers:
+            # Honor an auth/rate-limit cooldown (unless this is a forced/manual run).
+            if not force and server.cooldown_until:
+                cu = server.cooldown_until
+                if cu.tzinfo is None:
+                    cu = cu.replace(tzinfo=timezone.utc)
+                if cu > now:
+                    continue
             results.append(await reconcile_server(session, server, dry_run=dry_run))
         return results
 

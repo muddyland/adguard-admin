@@ -96,6 +96,7 @@ class ServerRead(BaseModel):
     last_seen: Optional[datetime]
     last_synced: Optional[datetime]
     last_error: Optional[str]
+    cooldown_until: Optional[datetime]
     in_sync: bool
     created_at: datetime
 

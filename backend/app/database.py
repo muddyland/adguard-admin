@@ -16,6 +16,7 @@ _ADDED_COLUMNS = {
         "manage_upstreams": "BOOLEAN DEFAULT 0",
         "latest_version": "TEXT",
         "update_available": "BOOLEAN DEFAULT 0",
+        "cooldown_until": "TIMESTAMP",
     },
     "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'", "managed": "BOOLEAN DEFAULT 0"},
     "upstream": {"zone_ids": "TEXT DEFAULT '[]'", "kind": "TEXT DEFAULT 'upstream'"},
