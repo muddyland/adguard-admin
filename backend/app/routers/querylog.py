@@ -73,11 +73,15 @@ async def query_log(
         for e in data:
             reason = e.get("reason") or ""
             q = e.get("question") or {}
+            client_ip = e.get("client") or ""
+            # Prefer a friendly client name (rDNS / configured client) over the bare IP.
+            client_name = (e.get("client_info") or {}).get("name") or e.get("client_id") or ""
             entries.append({
                 "server_id": srv["id"],
                 "server": srv["name"],
                 "time": e.get("time"),
-                "client": e.get("client"),
+                "client": client_ip,
+                "client_name": client_name,
                 "question": q.get("host"),
                 "type": q.get("type"),
                 "answer": _answer(e),

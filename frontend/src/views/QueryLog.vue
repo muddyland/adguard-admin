@@ -92,36 +92,65 @@ onMounted(async () => { await loadFilters(); await load() })
     </div>
 
     <div class="card">
-      <table>
+      <table class="qlog">
         <thead><tr>
           <th>Time</th><th>Server</th><th>Client</th><th>Domain</th><th>Type</th>
-          <th>Result</th><th>Upstream</th><th style="text-align:right">ms</th>
+          <th>Result</th><th>Answer</th><th>Upstream</th><th style="text-align:right">ms</th>
         </tr></thead>
         <tbody>
           <tr v-for="(e, i) in entries" :key="i">
             <td class="muted" style="white-space:nowrap">{{ fmt(e.time) }}</td>
-            <td>{{ e.server }}</td>
-            <td class="mono">{{ e.client }}</td>
-            <td class="mono">
+            <td class="clip" :title="e.server">{{ e.server }}</td>
+            <td class="clip" :class="{ mono: !e.client_name }"
+                :title="e.client_name ? `${e.client_name} (${e.client})` : e.client">
+              {{ e.client_name || e.client }}
+            </td>
+            <td class="mono domain" :title="e.question">
               <strong>{{ e.question }}</strong>
               <span v-if="e.cached" class="badge offline" style="margin-left:6px">cached</span>
             </td>
             <td class="muted">{{ e.type }}</td>
-            <td>
+            <td style="white-space:nowrap">
               <span v-if="e.blocked" class="badge error">blocked</span>
               <span v-else-if="e.reason && e.reason.startsWith('Rewrite')" class="badge global">rewritten</span>
               <span v-else class="badge synced">ok</span>
-              <span class="mono muted" style="margin-left:6px">{{ e.answer }}</span>
             </td>
-            <td class="mono muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">{{ e.upstream }}</td>
+            <td class="mono muted clip" :title="e.answer">{{ e.answer }}</td>
+            <td class="mono muted clip" :title="e.upstream">{{ e.upstream }}</td>
             <td class="muted" style="text-align:right">{{ e.elapsed_ms ? Number(e.elapsed_ms).toFixed(1) : '' }}</td>
           </tr>
-          <tr v-if="!entries.length"><td colspan="8" class="empty">{{ loading ? 'Loading…' : 'No queries match.' }}</td></tr>
+          <tr v-if="!entries.length"><td colspan="9" class="empty">{{ loading ? 'Loading…' : 'No queries match.' }}</td></tr>
         </tbody>
       </table>
     </div>
     <p class="hint" style="margin-top:10px">
       Combined view shows the most recent {{ limit }} queries from each selected server, merged by time.
+      Hover a truncated cell to see its full value.
     </p>
   </div>
 </template>
+
+<style scoped>
+/* Fixed layout keeps long answers/upstreams from blowing out the Domain column. */
+.qlog { table-layout: fixed; width: 100%; }
+.qlog th, .qlog td { overflow: hidden; }
+.qlog .clip {
+  max-width: 0;            /* fixed layout distributes by the col widths below */
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.qlog .domain {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Column widths: prioritise Domain, cap the noisy columns. */
+.qlog th:nth-child(1), .qlog td:nth-child(1) { width: 130px; }  /* Time */
+.qlog th:nth-child(2), .qlog td:nth-child(2) { width: 110px; }  /* Server */
+.qlog th:nth-child(3), .qlog td:nth-child(3) { width: 120px; }  /* Client */
+.qlog th:nth-child(4), .qlog td:nth-child(4) { width: 24%; }    /* Domain */
+.qlog th:nth-child(5), .qlog td:nth-child(5) { width: 56px; }   /* Type */
+.qlog th:nth-child(6), .qlog td:nth-child(6) { width: 92px; }   /* Result */
+.qlog th:nth-child(7), .qlog td:nth-child(7) { width: 22%; }    /* Answer */
+.qlog th:nth-child(8), .qlog td:nth-child(8) { width: 18%; }    /* Upstream */
+.qlog th:nth-child(9), .qlog td:nth-child(9) { width: 52px; }   /* ms */
+</style>
