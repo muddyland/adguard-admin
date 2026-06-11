@@ -73,6 +73,9 @@ async def query_log(
         for e in data:
             reason = e.get("reason") or ""
             q = e.get("question") or {}
+            # AdGuard serializes the queried domain under "name" (older builds /
+            # docs used "host"); prefer the unicode form for IDNs when present.
+            host = q.get("unicode_name") or q.get("name") or q.get("host")
             client_ip = e.get("client") or ""
             # Prefer a friendly client name (rDNS / configured client) over the bare IP.
             client_name = (e.get("client_info") or {}).get("name") or e.get("client_id") or ""
@@ -82,7 +85,7 @@ async def query_log(
                 "time": e.get("time"),
                 "client": client_ip,
                 "client_name": client_name,
-                "question": q.get("host"),
+                "question": host,
                 "type": q.get("type"),
                 "answer": _answer(e),
                 "reason": reason,
