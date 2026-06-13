@@ -6,6 +6,15 @@ define them once, group your servers into zones, and the reconciliation engine
 pushes the desired state to every server — automatically re-applying it whenever a
 server comes back online.
 
+![AdGuard Admin walkthrough](docs/images/walkthrough.gif)
+
+> **One control plane for your whole DNS fleet** — declare records and settings once,
+> and let reconciliation keep every AdGuard Home box in sync.
+>
+> 📖 **New here? Start with the [documentation](docs/README.md).**
+
+## Features
+
 - **Zones** — group servers logically (`on-prem`, `cloud`, `iot-vlan`, …).
 - **DNS records** — *global* (every server) or *zone-scoped* (only servers in a zone).
 - **DNS settings** — manage **upstream DNS servers** and per-domain **forward zones**
@@ -22,6 +31,33 @@ server comes back online.
 - **OIDC / Authentik** — single sign-on alongside local accounts.
 - **Stack** — single-container FastAPI + SQLModel backend serving a Vue 3 SPA styled
   after AdGuard Home.
+
+## Screenshots
+
+|  |  |
+|---|---|
+| **Dashboard** — fleet-wide query/blocked metrics | **Query log** — combined, searchable, per-server |
+| [![Dashboard](docs/images/dashboard.png)](docs/images/dashboard.png) | [![Query log](docs/images/query-log.png)](docs/images/query-log.png) |
+| **DNS records** — global & zone-scoped rewrites | **DNS settings** — upstreams & forward zones |
+| [![DNS records](docs/images/records.png)](docs/images/records.png) | [![DNS settings](docs/images/dns-settings.png)](docs/images/dns-settings.png) |
+| **Servers** — status, version, sync state | **Provisioning** — one-line server installs |
+| [![Servers](docs/images/servers.png)](docs/images/servers.png) | [![Provisioning](docs/images/provision.png)](docs/images/provision.png) |
+
+## Documentation
+
+Full guides live in [`docs/`](docs/README.md):
+
+| Guide | What it covers |
+|---|---|
+| [Getting started](docs/getting-started.md) | Run with Docker, log in, add your first server |
+| [Core concepts](docs/concepts.md) | Source-of-truth, zones, scopes, reconciliation, prune |
+| [Zones & DNS records](docs/zones-and-records.md) | Grouping servers and managing rewrites |
+| [Servers](docs/servers.md) | Adding, testing, importing, per-server behavior |
+| [DNS settings](docs/dns-settings.md) | Upstream resolvers and forward zones |
+| [Provisioning](docs/provisioning.md) | One-line install of new AdGuard servers |
+| [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
+| [Users & SSO](docs/users-and-sso.md) | Roles and OIDC / Authentik login |
+| [Configuration reference](docs/configuration.md) | Every environment variable |
 
 ## How the source-of-truth model works
 
@@ -84,25 +120,12 @@ npm install
 npm run dev                   # http://localhost:5173, proxies /api to :8000
 ```
 
-## OIDC with Authentik
+## OIDC / SSO
 
-1. In Authentik create an **OAuth2/OpenID Provider** + Application.
-   - Redirect URI: `<public-base-url>/api/auth/oidc/callback` (e.g. `http://localhost:8080/api/auth/oidc/callback`)
-   - Scopes: `openid email profile` (add a `groups` claim if you want group→role mapping).
-2. Set in `.env`:
-
-   ```
-   OIDC_ENABLED=true
-   OIDC_ISSUER=https://authentik.example.com/application/o/<app-slug>/
-   OIDC_CLIENT_ID=...
-   OIDC_CLIENT_SECRET=...
-   OIDC_REDIRECT_URI=http://localhost:8080/api/auth/oidc/callback
-   OIDC_ADMIN_GROUP=adguard-admins     # optional: members become admins
-   OIDC_DEFAULT_ROLE=viewer
-   ```
-
-3. The login screen shows **Sign in with Authentik**. First-time users are
-   provisioned automatically with `OIDC_DEFAULT_ROLE`.
+AdGuard Admin supports OpenID Connect single sign-on (tested with Authentik) alongside
+local accounts, with optional group→role mapping. See
+[Users & SSO](docs/users-and-sso.md) for the full setup, and the
+[configuration reference](docs/configuration.md#oidc--authentik) for every variable.
 
 ## Security notes
 
