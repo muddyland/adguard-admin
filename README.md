@@ -149,4 +149,7 @@ local accounts, with optional group→role mapping. See
 | CRUD | `/api/records` | editor | Manage DNS records |
 | POST | `/api/sync/run[/{id}]` | editor | Trigger reconciliation |
 | CRUD | `/api/users` | admin | Manage users |
-```
+
+## License
+
+Released under the [MIT License](LICENSE).
