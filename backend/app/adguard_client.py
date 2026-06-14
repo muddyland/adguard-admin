@@ -129,3 +129,43 @@ class AdGuardClient:
     async def delete_rewrite(self, rewrite: Rewrite) -> None:
         await self._request("POST", "/control/rewrite/delete",
                             json={"domain": rewrite.domain, "answer": rewrite.answer})
+
+    # --- Filtering: blocklists / allowlists ---------------------------------
+    async def filtering_status(self) -> dict:
+        """GET /control/filtering/status — {enabled, interval, filters,
+        whitelist_filters, user_rules}. Each filter has url/name/enabled."""
+        return (await self._request("GET", "/control/filtering/status")).json()
+
+    async def filtering_config(self, enabled: bool, interval: int) -> None:
+        """POST /control/filtering/config — toggle filtering + update interval."""
+        await self._request("POST", "/control/filtering/config",
+                            json={"enabled": enabled, "interval": interval})
+
+    async def filtering_add_url(self, name: str, url: str, whitelist: bool = False) -> None:
+        await self._request("POST", "/control/filtering/add_url",
+                            json={"name": name, "url": url, "whitelist": whitelist})
+
+    async def filtering_remove_url(self, url: str, whitelist: bool = False) -> None:
+        await self._request("POST", "/control/filtering/remove_url",
+                            json={"url": url, "whitelist": whitelist})
+
+    async def filtering_set_url(self, url: str, data: dict, whitelist: bool = False) -> None:
+        """Enable/disable or edit a filter. `data` = {enabled, name, url}."""
+        await self._request("POST", "/control/filtering/set_url",
+                            json={"url": url, "whitelist": whitelist, "data": data})
+
+    # --- Blocked services ---------------------------------------------------
+    async def blocked_services_all(self) -> dict:
+        """GET /control/blocked_services/all — every blockable service + groups."""
+        return (await self._request("GET", "/control/blocked_services/all")).json()
+
+    async def blocked_services_get(self) -> dict:
+        """GET /control/blocked_services/get — {ids, schedule} currently blocked."""
+        return (await self._request("GET", "/control/blocked_services/get")).json()
+
+    async def blocked_services_update(self, ids: list[str], schedule: dict | None = None) -> None:
+        """PUT /control/blocked_services/update — replace the blocked-service set."""
+        payload: dict = {"ids": ids}
+        if schedule is not None:
+            payload["schedule"] = schedule
+        await self._request("PUT", "/control/blocked_services/update", json=payload)

@@ -41,6 +41,8 @@ const importTarget = ref(null)
 const importScope = ref('global')
 const settingsTarget = ref(null)
 const settingsScope = ref('global')
+const filteringTarget = ref(null)
+const filteringScope = ref('global')
 const importing = ref(false)
 // Credentials modal
 const credsTarget = ref(null)
@@ -80,16 +82,18 @@ async function load() {
 function openCreate() {
   editing.value = null
   form.value = { name: '', url: '', username: '', password: '', zone_id: null, enabled: true, prune: false,
-                 manage_upstreams: false,
+                 manage_upstreams: false, manage_filtering: false,
                  import_records: false, import_scope: 'global',
-                 import_settings: false, import_settings_scope: 'global' }
+                 import_settings: false, import_settings_scope: 'global',
+                 import_filtering: false, import_filtering_scope: 'global' }
   error.value = ''
   showModal.value = true
 }
 function openEdit(s) {
   editing.value = s
   form.value = { name: s.name, url: s.url, username: s.username || '', password: '', zone_id: s.zone_id,
-                 enabled: s.enabled, prune: s.prune, manage_upstreams: s.manage_upstreams }
+                 enabled: s.enabled, prune: s.prune, manage_upstreams: s.manage_upstreams,
+                 manage_filtering: s.manage_filtering }
   error.value = ''
   showModal.value = true
 }
@@ -99,9 +103,11 @@ async function save() {
   const payload = { ...form.value }
   const wantImport = !editing.value && payload.import_records
   const wantSettings = !editing.value && payload.import_settings
+  const wantFiltering = !editing.value && payload.import_filtering
   const importScopeChoice = payload.import_scope
   const settingsScopeChoice = payload.import_settings_scope
-  for (const k of ['import_records', 'import_scope', 'import_settings', 'import_settings_scope']) delete payload[k]
+  const filteringScopeChoice = payload.import_filtering_scope
+  for (const k of ['import_records', 'import_scope', 'import_settings', 'import_settings_scope', 'import_filtering', 'import_filtering_scope']) delete payload[k]
   if (editing.value && !payload.password) delete payload.password // keep existing
   try {
     let created = null
@@ -123,6 +129,12 @@ async function save() {
         const { data } = await api.post(`/servers/${created.id}/import-settings`, null, { params: { scope: settingsScopeChoice } })
         notes.push(`${data.upstreams_imported} upstream(s), ${data.forward_zones_imported} forward zone(s) imported`)
       } catch (e) { notes.push(`settings import failed: ${e.response?.data?.detail || 'error'}`) }
+    }
+    if (created && wantFiltering) {
+      try {
+        const { data } = await api.post(`/servers/${created.id}/import-filtering`, null, { params: { scope: filteringScopeChoice } })
+        notes.push(`${data.filters_imported} list(s), ${data.blocked_services_imported} blocked service(s) imported`)
+      } catch (e) { notes.push(`filtering import failed: ${e.response?.data?.detail || 'error'}`) }
     }
     if (notes.length) msg.value = `${created.name}: ${notes.join('; ')}.`
     await load()
@@ -162,6 +174,25 @@ async function runImportSettings() {
     await load()
   } catch (e) {
     msg.value = `Settings import failed: ${e.response?.data?.detail || 'unknown error'}`
+  } finally {
+    importing.value = false
+  }
+}
+
+function openImportFiltering(s) {
+  filteringTarget.value = s
+  filteringScope.value = s.zone_id ? 'zone' : 'global'
+}
+
+async function runImportFiltering() {
+  importing.value = true
+  try {
+    const { data } = await api.post(`/servers/${filteringTarget.value.id}/import-filtering`, null, { params: { scope: filteringScope.value } })
+    msg.value = `Imported ${data.filters_imported} list(s) and ${data.blocked_services_imported} blocked service(s) from ${filteringTarget.value.name}.`
+    filteringTarget.value = null
+    await load()
+  } catch (e) {
+    msg.value = `Filtering import failed: ${e.response?.data?.detail || 'unknown error'}`
   } finally {
     importing.value = false
   }
@@ -250,6 +281,7 @@ onMounted(load)
             <td>
               {{ s.prune ? 'Prune' : '—' }}
               <span v-if="s.manage_upstreams" class="badge global" style="margin-left:4px">upstreams</span>
+              <span v-if="s.manage_filtering" class="badge global" style="margin-left:4px">filtering</span>
             </td>
             <td class="muted">{{ fmt(s.last_synced) }}</td>
             <td class="row-actions">
@@ -266,6 +298,7 @@ onMounted(load)
                   <div class="menu-divider"></div>
                   <button class="menu-item" @click="openImport(s)">Import records</button>
                   <button class="menu-item" @click="openImportSettings(s)">Import DNS settings</button>
+                  <button class="menu-item" @click="openImportFiltering(s)">Import filtering</button>
                   <div class="menu-divider"></div>
                   <button class="menu-item" @click="openEdit(s)">Edit</button>
                   <button class="menu-item danger" @click="remove(s)">Delete</button>
@@ -320,6 +353,11 @@ onMounted(load)
       <label for="manage-up" style="margin:0">Manage upstream DNS config (upstreams &amp; forward zones)</label>
     </div>
     <div class="hint">When on, sync also applies the DNS Settings defined for this server's scope.</div>
+    <div class="form-row checkbox-row" style="margin-top:10px">
+      <input type="checkbox" id="manage-filtering" v-model="form.manage_filtering" />
+      <label for="manage-filtering" style="margin:0">Manage filtering (blocklists, allowlists &amp; blocked services)</label>
+    </div>
+    <div class="hint">When on, sync also applies the Filtering defined for this server's scope.</div>
     <template v-if="!editing">
       <div class="form-row checkbox-row" style="margin-top:14px">
         <input type="checkbox" id="import-on-add" v-model="form.import_records" />
@@ -344,6 +382,19 @@ onMounted(load)
           <option value="server">Scoped to this server only</option>
         </select>
         <div class="hint">Reads upstreams &amp; forward zones into the admin app. Duplicates are skipped.</div>
+      </div>
+      <div class="form-row checkbox-row">
+        <input type="checkbox" id="import-filtering-on-add" v-model="form.import_filtering" />
+        <label for="import-filtering-on-add" style="margin:0">Import this server's existing filtering on add</label>
+      </div>
+      <div class="form-row" v-if="form.import_filtering">
+        <label>Import filtering as</label>
+        <select v-model="form.import_filtering_scope">
+          <option value="global">Global (apply to all servers)</option>
+          <option value="zone" :disabled="!form.zone_id">Scoped to this server's zone</option>
+          <option value="server">Scoped to this server only</option>
+        </select>
+        <div class="hint">Reads blocklists, allowlists &amp; blocked services into the admin app. Duplicates are skipped.</div>
       </div>
     </template>
     <template #footer>
@@ -434,6 +485,24 @@ onMounted(load)
     <template #footer>
       <button class="btn" @click="settingsTarget = null">Cancel</button>
       <button class="btn btn-primary" :disabled="importing" @click="runImportSettings">
+        <span v-if="importing" class="spinner"></span><span>Import</span>
+      </button>
+    </template>
+  </Modal>
+
+  <Modal v-if="filteringTarget" :title="`Import filtering from ${filteringTarget.name}`" @close="filteringTarget = null">
+    <p class="muted" style="margin-top:0">Reads the server's blocklists, allowlists and blocked services into the admin app. Existing entries (same scope &amp; target) are skipped.</p>
+    <div class="form-row">
+      <label>Import as</label>
+      <select v-model="filteringScope">
+        <option value="global">Global (apply to all servers)</option>
+        <option value="zone" :disabled="!filteringTarget.zone_id">Scoped to this server's zone</option>
+        <option value="server">Scoped to this server only</option>
+      </select>
+    </div>
+    <template #footer>
+      <button class="btn" @click="filteringTarget = null">Cancel</button>
+      <button class="btn btn-primary" :disabled="importing" @click="runImportFiltering">
         <span v-if="importing" class="spinner"></span><span>Import</span>
       </button>
     </template>

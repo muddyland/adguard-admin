@@ -19,6 +19,9 @@ server comes back online.
 - **DNS records** — *global* (every server) or *zone-scoped* (only servers in a zone).
 - **DNS settings** — manage **upstream DNS servers** and per-domain **forward zones**
   at global / zone / server scope; opt-in per server via *Manage upstreams*.
+- **Filtering** — manage **blocklists**, **allowlists** and **blocked services** at
+  global / zone / server scope, with a built-in catalog of popular lists ready to enable;
+  opt-in per server via *Manage filtering*.
 - **Reconciliation** — a background loop diffs desired vs. actual DNS rewrites (and
   upstreams) on each server and applies the difference. Offline servers are retried
   until they converge.
@@ -54,6 +57,7 @@ Full guides live in [`docs/`](docs/README.md):
 | [Zones & DNS records](docs/zones-and-records.md) | Grouping servers and managing rewrites |
 | [Servers](docs/servers.md) | Adding, testing, importing, per-server behavior |
 | [DNS settings](docs/dns-settings.md) | Upstream resolvers and forward zones |
+| [Filtering](docs/filtering.md) | Blocklists, allowlists and blocked services |
 | [Provisioning](docs/provisioning.md) | One-line install of new AdGuard servers |
 | [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
 | [Users & SSO](docs/users-and-sso.md) | Roles and OIDC / Authentik login |

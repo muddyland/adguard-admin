@@ -14,6 +14,7 @@ _ADDED_COLUMNS = {
     "server": {
         "tls_cert": "TEXT",
         "manage_upstreams": "BOOLEAN DEFAULT 0",
+        "manage_filtering": "BOOLEAN DEFAULT 0",
         "latest_version": "TEXT",
         "update_available": "BOOLEAN DEFAULT 0",
         "cooldown_until": "TIMESTAMP",

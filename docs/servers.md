@@ -38,15 +38,17 @@ reachable, the server flips to **online** and starts receiving the desired state
 | **Enabled** | When off, the server is ignored by the reconciliation engine (no pushes, no metrics). |
 | **Prune** | When on, the engine *removes* rewrites that aren't in the desired set, mirroring the admin DB exactly. Off by default — see [prune](concepts.md#prune). |
 | **Manage upstreams** | When on, the server also receives [DNS settings](dns-settings.md) (upstream resolvers and forward zones). When off, the server keeps its own DNS config. |
+| **Manage filtering** | When on, the server also receives [filtering](filtering.md) (blocklists, allowlists and blocked services). When off, the server keeps its own filtering config. |
 
 ## Importing existing config
 
-Adopting a server that already has records or upstreams? Use **import** (from the
-server's row menu):
+Adopting a server that already has records, upstreams, or filtering? Use **import** (from
+the server's row menu):
 
 - **Import records** pulls the server's existing DNS rewrites into the admin DB so they
   become managed going forward.
 - **Import settings** pulls the server's upstream/forward-zone configuration in.
+- **Import filtering** pulls the server's blocklists, allowlists and blocked services in.
 
 This lets you onboard a hand-configured server without retyping everything — and without
 risking deletion, since [prune](concepts.md#prune) stays off until you enable it.

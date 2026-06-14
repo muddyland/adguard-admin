@@ -36,6 +36,12 @@ class DnsServerKind(str, Enum):
     private = "private"       # -> local_ptr_upstreams (private reverse-DNS resolvers)
 
 
+class FilterKind(str, Enum):
+    """Which AdGuard filtering list a subscription belongs to."""
+    blocklist = "blocklist"   # -> filters (whitelist=false): blocks matching domains
+    allowlist = "allowlist"   # -> whitelist_filters (whitelist=true): exempts domains
+
+
 class SyncStatus(str, Enum):
     unknown = "unknown"
     online = "online"
@@ -94,6 +100,8 @@ class Server(SQLModel, table=True):
     prune: bool = False
     # Opt-in: also reconcile this server's upstream DNS config (upstreams + forward zones).
     manage_upstreams: bool = False
+    # Opt-in: also reconcile this server's filtering (blocklists, allowlists, blocked services).
+    manage_filtering: bool = False
     # Pinned PEM certificate for verifying TLS to this server (self-signed boxes).
     tls_cert: Optional[str] = None
 
@@ -162,6 +170,37 @@ class ForwardZone(SQLModel, table=True):
     domains: str
     # One or more upstream addresses, whitespace/comma/newline separated.
     upstreams: str
+    scope: ConfigScope = Field(default=ConfigScope.global_)
+    zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
+    enabled: bool = True
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+# --------------------------------------------------------------------------- #
+# Filtering: blocklists / allowlists & blocked services
+# --------------------------------------------------------------------------- #
+class FilterList(SQLModel, table=True):
+    """A filter-list subscription (blocklist or allowlist), scoped global /
+    zone / server. Pushed to AdGuard's /control/filtering on sync."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    url: str
+    kind: FilterKind = Field(default=FilterKind.blocklist, index=True)
+    scope: ConfigScope = Field(default=ConfigScope.global_)
+    zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
+    server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)
+    enabled: bool = True
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class BlockedService(SQLModel, table=True):
+    """A service to block (e.g. "youtube", "tiktok"), scoped global / zone /
+    server. The set of enabled ids is pushed to /control/blocked_services."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    service_id: str = Field(index=True)   # AdGuard service id, e.g. "facebook"
     scope: ConfigScope = Field(default=ConfigScope.global_)
     zone_ids: list[int] = Field(default_factory=list, sa_type=JSON)
     server_id: Optional[int] = Field(default=None, foreign_key="server.id", index=True)

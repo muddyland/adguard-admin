@@ -16,6 +16,7 @@ out to every server — and keep them that way.
 | [Zones & DNS records](zones-and-records.md) | Grouping servers and managing rewrites |
 | [Servers](servers.md) | Adding, testing, importing, and tuning per-server behavior |
 | [DNS settings](dns-settings.md) | Upstream resolvers and per-domain forward zones |
+| [Filtering](filtering.md) | Blocklists, allowlists and blocked services |
 | [Provisioning](provisioning.md) | One-line install of brand-new AdGuard servers |
 | [Dashboard & query log](dashboard-and-query-log.md) | Fleet-wide metrics and a combined, searchable query log |
 | [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC / Authentik login |

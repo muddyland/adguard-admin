@@ -16,6 +16,8 @@ from .deps import CurrentUser
 from .models import DNSRecord, Role, Server, SyncStatus, User, Zone
 from .routers import (
     auth,
+    blocked_services,
+    filters,
     forward_zones,
     metrics,
     provision,
@@ -88,6 +90,8 @@ app.include_router(provision.router)
 app.include_router(metrics.router)
 app.include_router(upstreams.router)
 app.include_router(forward_zones.router)
+app.include_router(filters.router)
+app.include_router(blocked_services.router)
 app.include_router(proxy.router)
 app.include_router(querylog.router)
 

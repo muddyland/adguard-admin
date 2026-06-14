@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from .models import (
     ConfigScope,
     DnsServerKind,
+    FilterKind,
     InstallMethod,
     ProvisionStatus,
     RecordScope,
@@ -89,6 +90,7 @@ class ServerRead(BaseModel):
     enabled: bool
     prune: bool
     manage_upstreams: bool
+    manage_filtering: bool
     status: SyncStatus
     version: Optional[str]
     latest_version: Optional[str]
@@ -113,6 +115,7 @@ class ServerCreate(BaseModel):
     enabled: bool = True
     prune: bool = False
     manage_upstreams: bool = False
+    manage_filtering: bool = False
 
 
 class ServerUpdate(BaseModel):
@@ -124,6 +127,7 @@ class ServerUpdate(BaseModel):
     enabled: Optional[bool] = None
     prune: Optional[bool] = None
     manage_upstreams: Optional[bool] = None
+    manage_filtering: Optional[bool] = None
 
 
 # ---- DNS records ----
@@ -231,6 +235,91 @@ class ForwardZoneUpdate(BaseModel):
     description: Optional[str] = None
 
 
+# ---- Filter lists (blocklists / allowlists) ----
+class FilterListRead(BaseModel):
+    id: int
+    name: str
+    url: str
+    kind: FilterKind
+    scope: ConfigScope
+    zone_ids: list[int]
+    server_id: Optional[int]
+    enabled: bool
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class FilterListCreate(BaseModel):
+    name: str
+    url: str
+    kind: FilterKind = FilterKind.blocklist
+    scope: ConfigScope = ConfigScope.global_
+    zone_ids: list[int] = []
+    server_id: Optional[int] = None
+    enabled: bool = True
+    description: Optional[str] = None
+
+
+class FilterListUpdate(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    kind: Optional[FilterKind] = None
+    scope: Optional[ConfigScope] = None
+    zone_ids: Optional[list[int]] = None
+    server_id: Optional[int] = None
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+
+# ---- Blocked services ----
+class BlockedServiceRead(BaseModel):
+    id: int
+    service_id: str
+    scope: ConfigScope
+    zone_ids: list[int]
+    server_id: Optional[int]
+    enabled: bool
+    description: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class BlockedServiceCreate(BaseModel):
+    service_id: str
+    scope: ConfigScope = ConfigScope.global_
+    zone_ids: list[int] = []
+    server_id: Optional[int] = None
+    enabled: bool = True
+    description: Optional[str] = None
+
+
+class BlockedServiceUpdate(BaseModel):
+    service_id: Optional[str] = None
+    scope: Optional[ConfigScope] = None
+    zone_ids: Optional[list[int]] = None
+    server_id: Optional[int] = None
+    enabled: Optional[bool] = None
+    description: Optional[str] = None
+
+
+# ---- Catalog (curated popular lists / services) ----
+class CatalogFilter(BaseModel):
+    name: str
+    url: str
+    kind: FilterKind
+    description: Optional[str] = None
+    recommended: bool = False
+
+
+class CatalogService(BaseModel):
+    service_id: str
+    name: str
+    recommended: bool = False
+
+
 # ---- Provisioning ----
 class ProvisionRequest(BaseModel):
     name: str
@@ -275,5 +364,6 @@ class SyncResultRead(BaseModel):
     added: list[str]
     deleted: list[str]
     upstreams_changed: bool = False
+    filtering_changed: bool = False
     error: Optional[str]
     version: Optional[str]

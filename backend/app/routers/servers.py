@@ -6,7 +6,19 @@ from sqlmodel import select
 from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
 from ..deps import CurrentUser, RequireEditor, SessionDep
-from ..models import ConfigScope, DnsServerKind, DNSRecord, ForwardZone, RecordScope, Server, Upstream, Zone
+from ..models import (
+    BlockedService,
+    ConfigScope,
+    DnsServerKind,
+    DNSRecord,
+    FilterKind,
+    FilterList,
+    ForwardZone,
+    RecordScope,
+    Server,
+    Upstream,
+    Zone,
+)
 from ..schemas import ServerCreate, ServerRead, ServerUpdate
 from ..security import decrypt_secret, encrypt_secret
 
@@ -256,6 +268,98 @@ async def import_settings(
     return {
         "upstreams_imported": up_imported, "upstreams_skipped": up_skipped,
         "forward_zones_imported": fz_imported, "forward_zones_skipped": fz_skipped,
+        "scope": scope.value,
+    }
+
+
+@router.post("/{server_id}/import-filtering")
+async def import_filtering(
+    server_id: int,
+    _: RequireEditor,
+    session: SessionDep,
+    scope: ConfigScope = ConfigScope.global_,
+):
+    """Pull a server's existing filter lists & blocked services into the admin DB.
+
+    Blocklists/allowlists become FilterList rows; blocked services become
+    BlockedService rows. Existing equivalents (same scope/target) are skipped, so
+    it's safe to re-run.
+    """
+    server = session.get(Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if scope == ConfigScope.zone and server.zone_id is None:
+        raise HTTPException(status_code=400, detail="Server has no zone; import as global or server scope")
+
+    cfg_zone_ids = [server.zone_id] if scope == ConfigScope.zone else []
+    target_server_id = server.id if scope == ConfigScope.server else None
+
+    client = AdGuardClient(server.url, server.username, decrypt_secret(server.password_enc), verify=verify_for(server.tls_cert))
+    try:
+        status_data = await client.filtering_status()
+        try:
+            blocked = await client.blocked_services_get()
+        except AdGuardError:
+            blocked = {"ids": []}
+    except AdGuardError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not read filtering from server: {exc}")
+    finally:
+        await client.aclose()
+
+    def _zone_exists(row) -> bool:
+        return scope != ConfigScope.zone or server.zone_id in (row.zone_ids or [])
+
+    fl_imported = fl_skipped = bs_imported = bs_skipped = 0
+
+    list_kinds = [(FilterKind.blocklist, "filters"), (FilterKind.allowlist, "whitelist_filters")]
+    for kind, key in list_kinds:
+        for item in status_data.get(key) or []:
+            url = (item.get("url") or "").strip()
+            if not url:
+                continue
+            candidates = session.exec(
+                select(FilterList).where(
+                    FilterList.url == url,
+                    FilterList.kind == kind,
+                    FilterList.scope == scope,
+                    FilterList.server_id == target_server_id,
+                )
+            ).all()
+            if any(_zone_exists(f) for f in candidates):
+                fl_skipped += 1
+                continue
+            session.add(FilterList(
+                name=(item.get("name") or url)[:200], url=url, kind=kind, scope=scope,
+                zone_ids=cfg_zone_ids, server_id=target_server_id,
+                enabled=bool(item.get("enabled", True)),
+                description=f"Imported from {server.name}",
+            ))
+            fl_imported += 1
+
+    for sid in blocked.get("ids") or []:
+        sid = (sid or "").strip()
+        if not sid:
+            continue
+        candidates = session.exec(
+            select(BlockedService).where(
+                BlockedService.service_id == sid,
+                BlockedService.scope == scope,
+                BlockedService.server_id == target_server_id,
+            )
+        ).all()
+        if any(_zone_exists(b) for b in candidates):
+            bs_skipped += 1
+            continue
+        session.add(BlockedService(
+            service_id=sid, scope=scope, zone_ids=cfg_zone_ids,
+            server_id=target_server_id, description=f"Imported from {server.name}",
+        ))
+        bs_imported += 1
+
+    session.commit()
+    return {
+        "filters_imported": fl_imported, "filters_skipped": fl_skipped,
+        "blocked_services_imported": bs_imported, "blocked_services_skipped": bs_skipped,
         "scope": scope.value,
     }
 

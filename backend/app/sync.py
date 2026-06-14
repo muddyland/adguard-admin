@@ -24,9 +24,12 @@ from .certs import verify_for
 from .config import settings
 from .database import engine
 from .models import (
+    BlockedService,
     ConfigScope,
     DnsServerKind,
     DNSRecord,
+    FilterKind,
+    FilterList,
     ForwardZone,
     RecordScope,
     Server,
@@ -46,6 +49,7 @@ class ServerSyncResult:
     added: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
     upstreams_changed: bool = False
+    filtering_changed: bool = False
     error: str | None = None
     version: str | None = None
 
@@ -110,6 +114,86 @@ def desired_upstreams_for_server(session: Session, server: Server) -> list[str]:
         entries.append("[/" + "/".join(domains) + "/]" + " ".join(upstreams))
 
     return _dedupe(entries)
+
+
+def _filters_for_server(session: Session, server: Server, kind: FilterKind) -> list[FilterList]:
+    """Filter lists of one kind (blocklist/allowlist) that apply to this server."""
+    rows = session.exec(select(FilterList).where(FilterList.kind == kind)).all()
+    return [f for f in rows if _scope_matches(f, server) and f.url.strip()]
+
+
+def desired_blocked_services_for_server(session: Session, server: Server) -> list[str]:
+    """Sorted set of service ids that should be blocked on this server."""
+    rows = session.exec(
+        select(BlockedService).where(BlockedService.enabled == True)  # noqa: E712
+    ).all()
+    return sorted({r.service_id.strip() for r in rows if _scope_matches(r, server) and r.service_id.strip()})
+
+
+# AdGuard's filtering/status splits lists into these two response keys.
+_FILTER_KINDS = [
+    (FilterKind.blocklist, False, "filters"),
+    (FilterKind.allowlist, True, "whitelist_filters"),
+]
+
+
+async def _reconcile_filtering(session: Session, server: Server, client: AdGuardClient, *, dry_run: bool) -> bool:
+    """Apply blocklists, allowlists and blocked services. Returns True if anything
+    changed (or would change, in dry-run). Removals only happen when prune is on."""
+    changed = False
+    status = await client.filtering_status()
+
+    desired_block_enabled = 0
+    for kind, whitelist, key in _FILTER_KINDS:
+        desired = _filters_for_server(session, server, kind)
+        if kind == FilterKind.blocklist:
+            desired_block_enabled = sum(1 for f in desired if f.enabled)
+        current = {(it.get("url") or "").strip(): it for it in (status.get(key) or []) if it.get("url")}
+        desired_urls: set[str] = set()
+        for f in desired:
+            url = f.url.strip()
+            desired_urls.add(url)
+            cur = current.get(url)
+            if cur is None:
+                changed = True
+                if not dry_run:
+                    await client.filtering_add_url(f.name, url, whitelist)
+                    # add_url always adds enabled; disable afterwards if needed.
+                    if not f.enabled:
+                        await client.filtering_set_url(url, {"enabled": False, "name": f.name, "url": url}, whitelist)
+            elif bool(cur.get("enabled")) != f.enabled or (cur.get("name") or "") != f.name:
+                changed = True
+                if not dry_run:
+                    await client.filtering_set_url(url, {"enabled": f.enabled, "name": f.name, "url": url}, whitelist)
+        if server.prune:
+            for url in current:
+                if url and url not in desired_urls:
+                    changed = True
+                    if not dry_run:
+                        await client.filtering_remove_url(url, whitelist)
+
+    # Make sure the filtering engine itself is on when we manage blocklists.
+    if desired_block_enabled and not status.get("enabled"):
+        changed = True
+        if not dry_run:
+            await client.filtering_config(True, int(status.get("interval") or 24))
+
+    # Blocked services. Only act when we have a managed set, so we never wipe a
+    # server's services just because none are defined here (mirrors upstreams).
+    desired_ids = desired_blocked_services_for_server(session, server)
+    if desired_ids:
+        try:
+            cur = await client.blocked_services_get()
+            cur_ids = set(cur.get("ids") or [])
+            target = set(desired_ids) if server.prune else (cur_ids | set(desired_ids))
+            if target != cur_ids:
+                changed = True
+                if not dry_run:
+                    await client.blocked_services_update(sorted(target), cur.get("schedule"))
+        except AdGuardError as exc:
+            logger.debug("blocked services not reconciled for %s: %s", server.name, exc)
+
+    return changed
 
 
 async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
@@ -181,8 +265,16 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
                     await client.set_dns_config(payload)
         result.upstreams_changed = not upstreams_in_sync
 
+        # Optionally reconcile filtering (opt-in per server): blocklists,
+        # allowlists and blocked services.
+        filtering_in_sync = True
+        if server.manage_filtering:
+            filtering_changed = await _reconcile_filtering(session, server, client, dry_run=dry_run)
+            filtering_in_sync = not filtering_changed
+        result.filtering_changed = not filtering_in_sync
+
         server.status = SyncStatus.online
-        server.in_sync = not to_add and not to_delete and upstreams_in_sync
+        server.in_sync = not to_add and not to_delete and upstreams_in_sync and filtering_in_sync
         server.last_error = None
         server.cooldown_until = None  # healthy again
         if not dry_run:
