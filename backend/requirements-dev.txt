@@ -1,0 +1,8 @@
+# Test + lint tooling. Installed on top of requirements.txt.
+-r requirements.txt
+
+pytest==8.4.2
+anyio==4.11.0
+ruff==0.14.4
+# Dependency vulnerability scanning, wired into CI.
+pip-audit==2.9.0

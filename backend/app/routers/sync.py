@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from ..deps import CurrentUser, RequireEditor
 from ..schemas import SyncResultRead
-from ..sync import reconcile_all, sync_manager
+from ..sync import sync_manager
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
@@ -17,12 +17,18 @@ def sync_status(_: CurrentUser):
 
 @router.post("/run", response_model=list[SyncResultRead])
 async def run_sync(_: RequireEditor, dry_run: bool = False):
-    """Trigger an immediate reconcile of all enabled servers (bypasses cooldown)."""
-    results = await reconcile_all(dry_run=dry_run, force=True)
+    """Trigger an immediate reconcile of all enabled servers (bypasses cooldown).
+
+    Goes through sync_manager so it queues behind any in-flight cycle rather
+    than racing the background loop over the same servers.
+    """
+    results = await sync_manager.run_once(dry_run=dry_run, force=True)
     return [r.__dict__ for r in results]
 
 
 @router.post("/run/{server_id}", response_model=list[SyncResultRead])
 async def run_sync_server(server_id: int, _: RequireEditor, dry_run: bool = False):
-    results = await reconcile_all(dry_run=dry_run, only_server_id=server_id, force=True)
+    results = await sync_manager.run_once(
+        dry_run=dry_run, only_server_id=server_id, force=True
+    )
     return [r.__dict__ for r in results]

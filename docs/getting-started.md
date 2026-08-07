@@ -17,7 +17,7 @@ cat > .env <<EOF
 SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
 FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-me
+ADMIN_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(16))")
 PUBLIC_BASE_URL=http://localhost:8080
 FRONTEND_URL=http://localhost:8080
 CORS_ORIGINS=http://localhost:8080
@@ -32,7 +32,11 @@ Everything is served on **<http://localhost:8080>**:
 - **API docs** (OpenAPI/Swagger) — <http://localhost:8080/docs>
 
 `SECRET_KEY` signs login tokens; `FERNET_KEY` encrypts your AdGuard server passwords at
-rest. Both are required — see the [configuration reference](configuration.md).
+rest. Both are required, and **the app refuses to start without them** — it prints
+every configuration problem it found and exits. `ADMIN_PASSWORD` must not be the
+literal `admin`. See the [configuration reference](configuration.md).
+
+Read your generated bootstrap password back with `grep ADMIN_PASSWORD .env`.
 
 ## 2. Log in
 

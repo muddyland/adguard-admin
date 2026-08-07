@@ -8,7 +8,9 @@ python-multipart==0.0.32
 
 # Data layer
 sqlmodel==0.0.38
-pydantic-settings==2.14.1
+# pydantic-settings >=2.14.2 fixes CVE-2026-58203 (NestedSecretsSettingsSource
+# follows symlinks out of secrets_dir -> local file read)
+pydantic-settings==2.14.2
 
 # HTTP client for talking to AdGuard Home instances
 httpx==0.28.1
@@ -22,5 +24,9 @@ pwdlib[argon2]==0.2.1
 # Authlib >=1.7.2 fixes CVE-2026-28802 (sig bypass), CVE-2025-68158 (ATO), CVE-2025-61920 (DoS)
 authlib==1.7.2
 itsdangerous==2.2.0
-# cryptography 48.0.1 fixes GHSA-537c-gmf6-5ccf
-cryptography==48.0.1
+# cryptography 48.0.1 fixed GHSA-537c-gmf6-5ccf (bundled OpenSSL).
+# 50.0.0 additionally fixes CVE-2026-69247 (PKCS#7 Bleichenbacher oracle),
+# CVE-2026-69248 (wildcard SAN escapes permittedSubtrees) and CVE-2026-69249
+# (exponential cert path-building DoS) — the latter two matter here because
+# certs.py builds pinned SSL contexts from server-supplied PEMs.
+cryptography==50.0.0

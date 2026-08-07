@@ -239,3 +239,9 @@ class ProvisioningToken(SQLModel, table=True):
     expires_at: datetime = Field(default_factory=utcnow)
     completed_at: Optional[datetime] = None
     server_id: Optional[int] = Field(default=None, foreign_key="server.id")
+
+    # Secret-bearing provisioning endpoints are single-fetch: once install.sh has
+    # collected the config / private key, a replay of the (log-visible) URL is
+    # refused. Set to the time of the first successful fetch.
+    config_fetched_at: Optional[datetime] = None
+    key_fetched_at: Optional[datetime] = None

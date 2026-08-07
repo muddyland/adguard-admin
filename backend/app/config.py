@@ -2,6 +2,21 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Values that mean "the operator never set a real secret". Startup refuses to
+# continue on any of these unless ALLOW_INSECURE_CONFIG=true.
+PLACEHOLDER_SECRETS = {
+    "",
+    "change-me-please-generate-a-long-random-string",
+    "changeme",
+    "change-me",
+    "secret",
+    "supersecret",
+}
+
+MIN_SECRET_KEY_LENGTH = 32
+
+VALID_ROLES = {"admin", "editor", "viewer"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -18,6 +33,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 12
     jwt_algorithm: str = "HS256"
 
+    # Downgrade the startup config checks from fatal errors to warnings. Only for
+    # local development — never set this in a deployment.
+    allow_insecure_config: bool = False
+
     # Bootstrap admin (created on first start if no users exist)
     admin_username: str = "admin"
     admin_password: str = "admin"
@@ -32,10 +51,31 @@ class Settings(BaseSettings):
 
     # Reconciliation loop
     sync_interval_seconds: int = 60
+    # How many servers to reconcile at once. The loop used to be strictly
+    # sequential, so a fleet of slow/unreachable servers could not finish a cycle
+    # within sync_interval_seconds.
+    sync_max_concurrency: int = 8
+    # Per-request timeout when talking to an AdGuard instance.
+    adguard_timeout_seconds: float = 10.0
     # If True, the engine removes DNS rewrites on a server that are not part of
     # the desired (managed) state. Off by default so we never touch records the
     # admin app didn't create. Can be toggled per-server.
     default_prune: bool = False
+
+    # Login brute-force protection (in-process; see app.ratelimit).
+    login_max_attempts: int = 10
+    login_window_seconds: int = 300
+    login_lockout_seconds: int = 300
+
+    # --- Embedded AdGuard UI proxy -----------------------------------------
+    # The proxy serves a remote AdGuard instance's own HTML/JS through our
+    # origin. The iframe is sandboxed WITHOUT allow-same-origin so that content
+    # lands in an opaque origin and cannot read this app's localStorage. Set
+    # ui_proxy_allow_same_origin=true only if your AdGuard build refuses to run
+    # sandboxed — it re-exposes the admin session to the proxied instance.
+    ui_proxy_enabled: bool = True
+    ui_proxy_allow_same_origin: bool = False
+    proxy_token_ttl_minutes: int = 60
 
     # OIDC / Authentik (all optional — OIDC is disabled unless issuer is set)
     oidc_enabled: bool = False
@@ -51,8 +91,92 @@ class Settings(BaseSettings):
     oidc_default_role: str = "viewer"
     # Optional Authentik group whose members become admins.
     oidc_admin_group: str = ""
+    # Adopt a pre-existing local account when the OIDC username matches it. Off
+    # by default: if the IdP lets users choose their own preferred_username,
+    # turning this on allows claiming any local account (including 'admin').
+    oidc_allow_username_linking: bool = False
 
     cors_origins: str = "http://localhost:5173,http://localhost:8000"
+
+    # ----------------------------------------------------------------------- #
+    # Derived helpers
+    # ----------------------------------------------------------------------- #
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def secure_cookies(self) -> bool:
+        """Mark cookies Secure when this app is reached over HTTPS."""
+        return self.public_base_url.lower().startswith("https")
+
+
+def config_problems(s: Settings) -> list[str]:
+    """Return a list of fatal misconfigurations. Empty means good to start.
+
+    Kept separate from Settings construction so importing the module never
+    raises — startup calls this explicitly and decides what to do.
+    """
+    problems: list[str] = []
+
+    if s.secret_key.strip().lower() in PLACEHOLDER_SECRETS:
+        problems.append(
+            "SECRET_KEY is unset or still the placeholder value. Anyone who knows the "
+            "default can forge admin tokens. Generate one with: "
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
+    elif len(s.secret_key) < MIN_SECRET_KEY_LENGTH:
+        problems.append(
+            f"SECRET_KEY is only {len(s.secret_key)} characters; "
+            f"at least {MIN_SECRET_KEY_LENGTH} are required."
+        )
+
+    if not s.fernet_key.strip():
+        problems.append(
+            "FERNET_KEY is not set; AdGuard server credentials cannot be encrypted at rest. "
+            'Generate one with: python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"'
+        )
+    else:
+        # Fail here rather than deep inside the reconcile loop, where a bad key
+        # surfaces as an opaque per-server error.
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(s.fernet_key.encode())
+        except Exception as exc:
+            problems.append(f"FERNET_KEY is not a valid Fernet key: {exc}")
+
+    if s.admin_password == "admin":
+        problems.append(
+            "ADMIN_PASSWORD is still 'admin'. Set a real bootstrap password before first start."
+        )
+
+    if "*" in s.cors_origin_list:
+        problems.append(
+            "CORS_ORIGINS contains '*', which cannot be combined with credentialed "
+            "requests. List the exact origins instead."
+        )
+
+    if s.oidc_default_role not in VALID_ROLES:
+        problems.append(
+            f"OIDC_DEFAULT_ROLE={s.oidc_default_role!r} is not one of {sorted(VALID_ROLES)}."
+        )
+
+    if s.oidc_enabled and not (s.oidc_issuer and s.oidc_client_id and s.oidc_client_secret):
+        problems.append(
+            "OIDC_ENABLED is true but OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET "
+            "are not all set."
+        )
+
+    if s.ui_proxy_enabled and s.ui_proxy_allow_same_origin:
+        problems.append(
+            "UI_PROXY_ALLOW_SAME_ORIGIN grants every proxied AdGuard instance same-origin "
+            "access to this app (it can read the admin session token). Leave it off unless "
+            "you fully trust every managed server."
+        )
+
+    return problems
 
 
 @lru_cache

@@ -38,6 +38,27 @@ setup wizard, no copying credentials around.
   the install endpoint.
 - Toggle **Show revoked** to include inactive tokens in the list.
 
+### Secret endpoints are single-fetch
+
+The token travels in a URL, which means it can end up in shell history, your
+terminal scrollback, and the access log of every reverse proxy on both sides. So
+the two endpoints that hand out secrets — `/config` (the generated AdGuard admin
+password) and `/key.pem` (the TLS private key) — serve them **exactly once**. A
+second request returns `410 Gone` and is logged as a possible token leak.
+
+In practice `install.sh` fetches each once, so you won't notice. But it does mean
+**a failed install cannot simply be re-run against the same token**: revoke it and
+issue a new one. The public certificate (`/cert.pem`) is not a secret and stays
+repeatable.
+
+### Input validation
+
+The server **name** and **connect address** are interpolated into a script that
+runs as root on the target host, so they are validated on entry (no control
+characters; addresses must be a plain hostname or IP) and shell-quoted on output.
+The address reported back by `/complete` is validated the same way — it becomes a
+URL this app connects to with credentials.
+
 ## Requirements
 
 - **`PUBLIC_BASE_URL` must be reachable by the new server.** The install command and the

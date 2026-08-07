@@ -47,19 +47,32 @@ def generate_token(nbytes: int = 32) -> str:
     return secrets.token_urlsafe(nbytes)
 
 
-def create_proxy_token(server_id: int, user_id: int, minutes: int = 60) -> str:
+def create_proxy_token(server_id: int, user_id: int, minutes: Optional[int] = None) -> str:
     """Short-lived token (carried in a path-scoped cookie) authorizing the UI proxy."""
-    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    ttl = settings.proxy_token_ttl_minutes if minutes is None else minutes
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ttl)
     payload = {"typ": "proxy", "psrv": server_id, "sub": str(user_id), "exp": expire}
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_proxy_token(token: str, server_id: int) -> bool:
+def decode_proxy_token(token: str, server_id: int) -> Optional[int]:
+    """Validate a proxy cookie and return the user id it was minted for.
+
+    Returns None when the token is invalid, expired, not a proxy token, or was
+    issued for a different server. The caller must still re-check that the user
+    exists, is active and still holds the required role — the token alone is not
+    proof of current authorization.
+    """
     try:
         claims = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError:
-        return False
-    return claims.get("typ") == "proxy" and claims.get("psrv") == server_id
+        return None
+    if claims.get("typ") != "proxy" or claims.get("psrv") != server_id:
+        return None
+    try:
+        return int(claims["sub"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #

@@ -8,12 +8,15 @@ set of servers queried.
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
 from sqlmodel import Session, select
 
 from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
+from ..config import settings
 from ..database import engine
 from ..deps import CurrentUser
 from ..models import Server
@@ -21,20 +24,55 @@ from ..security import decrypt_secret
 
 router = APIRouter(prefix="/api/querylog", tags=["querylog"])
 
+logger = logging.getLogger("adguard_admin.querylog")
+
+# Sorts before every real timestamp, for entries whose time we can't parse.
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
 
 def _answer(entry: dict) -> str:
     return ", ".join(a.get("value", "") for a in (entry.get("answer") or []) if a.get("value"))
 
 
-async def _fetch(srv: dict, params: dict) -> tuple[dict, list]:
-    client = AdGuardClient(srv["url"], srv["username"], srv["password"], verify=verify_for(srv["tls_cert"]))
+def _parse_time(value) -> datetime:
+    """Parse an AdGuard RFC 3339 timestamp to an aware datetime.
+
+    Entries are merged from several servers, so sorting the raw strings was only
+    correct while every server emitted the same format and UTC offset. Compare
+    real instants instead.
+    """
+    if not isinstance(value, str) or not value:
+        return _EPOCH
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
     try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return _EPOCH
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _fetch(srv: dict, params: dict) -> tuple[dict, list]:
+    # Client construction can raise (bad pinned cert / bad FERNET_KEY); keep it
+    # inside the try so one broken server can't 500 the whole query log.
+    client = None
+    try:
+        client = AdGuardClient(
+            srv["url"], srv["username"], srv["password"],
+            timeout=settings.adguard_timeout_seconds,
+            verify=verify_for(srv["tls_cert"]),
+        )
         data = await client.query_log(params)
         return srv, (data.get("data") or [])
     except AdGuardError:
         return srv, []
+    except Exception as exc:
+        logger.warning("query log fetch failed for %s: %s", srv.get("name"), exc)
+        return srv, []
     finally:
-        await client.aclose()
+        if client is not None:
+            await client.aclose()
 
 
 @router.get("")
@@ -66,11 +104,23 @@ async def query_log(
     if response_status and response_status != "all":
         params["response_status"] = response_status
 
-    results = await asyncio.gather(*[_fetch(t, params) for t in targets]) if targets else []
+    settled = (
+        await asyncio.gather(*[_fetch(t, params) for t in targets], return_exceptions=True)
+        if targets else []
+    )
+    results = []
+    for target, item in zip(targets, settled):
+        if isinstance(item, BaseException):
+            logger.warning("query log task for %s raised: %s", target.get("name"), item)
+            results.append((target, []))
+        else:
+            results.append(item)
 
     entries = []
     for srv, data in results:
         for e in data:
+            if not isinstance(e, dict):
+                continue
             reason = e.get("reason") or ""
             q = e.get("question") or {}
             # AdGuard serializes the queried domain under "name" (older builds /
@@ -95,5 +145,5 @@ async def query_log(
                 "cached": e.get("cached", False),
             })
 
-    entries.sort(key=lambda x: x["time"] or "", reverse=True)
+    entries.sort(key=lambda x: _parse_time(x["time"]), reverse=True)
     return {"entries": entries[:limit], "servers_queried": len(targets), "total_fetched": len(entries)}

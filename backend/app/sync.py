@@ -199,9 +199,30 @@ async def _reconcile_filtering(session: Session, server: Server, client: AdGuard
 async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
     result = ServerSyncResult(server_id=server.id, server_name=server.name, status=SyncStatus.unknown)
     desired = desired_rewrites_for_server(session, server)
-    password = decrypt_secret(server.password_enc)
 
-    client = AdGuardClient(server.url, server.username, password, verify=verify_for(server.tls_cert))
+    # Building the client can itself fail — decrypt_secret raises on a malformed
+    # FERNET_KEY and verify_for raises ssl.SSLError on an unparseable pinned
+    # cert. Both used to happen outside the try, so a single bad server aborted
+    # the whole cycle and every server after it silently stopped reconciling.
+    try:
+        password = decrypt_secret(server.password_enc)
+        client = AdGuardClient(
+            server.url, server.username, password,
+            timeout=settings.adguard_timeout_seconds,
+            verify=verify_for(server.tls_cert),
+        )
+    except Exception as exc:
+        logger.exception("could not build a client for %s", server.name)
+        result.status = SyncStatus.error
+        result.error = str(exc)
+        server.status = SyncStatus.error
+        server.in_sync = False
+        server.last_error = f"Server configuration error: {exc}"
+        session.add(server)
+        session.commit()
+        session.refresh(server)
+        return result
+
     try:
         status = await client.status()
         result.version = status.get("version")
@@ -384,6 +405,51 @@ def reconcile_hostname_records() -> None:
             session.commit()
 
 
+def _due_servers(force: bool, only_server_id: int | None) -> list[int]:
+    """Ids of enabled servers that are due this cycle. Read in its own short
+    session so we don't hold a connection open across the network I/O below."""
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        stmt = select(Server).where(Server.enabled == True)  # noqa: E712
+        if only_server_id is not None:
+            stmt = stmt.where(Server.id == only_server_id)
+        due: list[int] = []
+        for server in session.exec(stmt).all():
+            # Honor an auth/rate-limit cooldown (unless this is a forced/manual run).
+            if not force and server.cooldown_until:
+                cu = server.cooldown_until
+                if cu.tzinfo is None:
+                    cu = cu.replace(tzinfo=timezone.utc)
+                if cu > now:
+                    continue
+            due.append(server.id)
+        return due
+
+
+async def _reconcile_one(server_id: int, *, dry_run: bool) -> ServerSyncResult | None:
+    """Reconcile a single server in its own session, never raising.
+
+    Each server gets a fresh short-lived Session: the previous single
+    cycle-long session held a SQLite connection open across every server's
+    HTTP round-trips.
+    """
+    try:
+        with Session(engine) as session:
+            server = session.get(Server, server_id)
+            if server is None:  # deleted mid-cycle
+                return None
+            return await reconcile_server(session, server, dry_run=dry_run)
+    except Exception as exc:
+        # Last line of defence. One server must never take down the cycle.
+        logger.exception("reconcile of server id=%s failed outright", server_id)
+        return ServerSyncResult(
+            server_id=server_id,
+            server_name=f"server #{server_id}",
+            status=SyncStatus.error,
+            error=str(exc),
+        )
+
+
 async def reconcile_all(
     *, dry_run: bool = False, only_server_id: int | None = None, force: bool = False
 ) -> list[ServerSyncResult]:
@@ -395,40 +461,78 @@ async def reconcile_all(
         except Exception:
             logger.exception("hostname record reconcile failed")
 
-    now = datetime.now(timezone.utc)
-    with Session(engine) as session:
-        stmt = select(Server).where(Server.enabled == True)  # noqa: E712
-        if only_server_id is not None:
-            stmt = stmt.where(Server.id == only_server_id)
-        servers = session.exec(stmt).all()
-        results: list[ServerSyncResult] = []
-        for server in servers:
-            # Honor an auth/rate-limit cooldown (unless this is a forced/manual run).
-            if not force and server.cooldown_until:
-                cu = server.cooldown_until
-                if cu.tzinfo is None:
-                    cu = cu.replace(tzinfo=timezone.utc)
-                if cu > now:
-                    continue
-            results.append(await reconcile_server(session, server, dry_run=dry_run))
-        return results
+    server_ids = await asyncio.to_thread(_due_servers, force, only_server_id)
+    if not server_ids:
+        return []
+
+    # Bounded fan-out. Strictly sequential reconciliation could not finish a
+    # cycle within sync_interval_seconds once a handful of servers were slow or
+    # unreachable (each burns the full per-request timeout).
+    limit = max(1, settings.sync_max_concurrency)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _guarded(server_id: int) -> ServerSyncResult | None:
+        async with semaphore:
+            return await _reconcile_one(server_id, dry_run=dry_run)
+
+    settled = await asyncio.gather(
+        *(_guarded(sid) for sid in server_ids), return_exceptions=True
+    )
+
+    results: list[ServerSyncResult] = []
+    for server_id, item in zip(server_ids, settled):
+        if isinstance(item, BaseException):
+            logger.exception(
+                "reconcile task for server id=%s raised", server_id, exc_info=item
+            )
+            results.append(ServerSyncResult(
+                server_id=server_id, server_name=f"server #{server_id}",
+                status=SyncStatus.error, error=str(item),
+            ))
+        elif item is not None:
+            results.append(item)
+    return results
 
 
 class SyncManager:
     """Owns the background reconcile loop."""
 
+    # How long to wait for an in-flight cycle during shutdown before cancelling.
+    SHUTDOWN_GRACE_SECONDS = 15.0
+
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        # Serialises reconcile cycles. Without it a manual POST /api/sync/run
+        # could race the background loop (or itself) over the same servers, so
+        # both would compute the same diff and both apply it.
+        self._run_lock = asyncio.Lock()
         self.last_run: datetime | None = None
         self.last_results: list[ServerSyncResult] = []
 
+    async def run_once(
+        self, *, dry_run: bool = False, only_server_id: int | None = None, force: bool = False
+    ) -> list[ServerSyncResult]:
+        """Run one reconcile cycle, waiting for any in-flight cycle to finish."""
+        async with self._run_lock:
+            results = await reconcile_all(
+                dry_run=dry_run, only_server_id=only_server_id, force=force
+            )
+            if not dry_run and only_server_id is None:
+                self.last_results = results
+                self.last_run = datetime.now(timezone.utc)
+            return results
+
     async def _loop(self) -> None:
-        logger.info("sync loop started (interval=%ss)", settings.sync_interval_seconds)
+        logger.info(
+            "sync loop started (interval=%ss, concurrency=%s)",
+            settings.sync_interval_seconds, settings.sync_max_concurrency,
+        )
         while not self._stop.is_set():
             try:
-                self.last_results = await reconcile_all()
-                self.last_run = datetime.now(timezone.utc)
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("reconcile_all crashed")
             try:
@@ -443,8 +547,24 @@ class SyncManager:
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._task:
-            await self._task
+        task = self._task
+        if not task:
+            return
+        # Don't let shutdown block for a whole cycle over slow servers.
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=self.SHUTDOWN_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "sync loop did not finish within %ss; cancelling",
+                self.SHUTDOWN_GRACE_SECONDS,
+            )
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: B014 - shutdown path
+                pass
+        finally:
+            self._task = None
 
 
 sync_manager = SyncManager()

@@ -11,14 +11,19 @@ production are flagged.
 | `APP_NAME` | `AdGuard Admin` | Display name. |
 | `DATABASE_URL` | `sqlite:///./adguard_admin.db` | The Docker image uses `sqlite:////data/adguard_admin.db` on a persistent volume. |
 
-## Security — **set these in production**
+## Security — required
+
+**The app refuses to start** if any of these is missing or left at a placeholder.
+Startup prints every problem it found and exits; fix them all, or set
+`ALLOW_INSECURE_CONFIG=true` for local development only.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SECRET_KEY` | _(insecure placeholder)_ | **Required.** Signs JWTs. Use a long random string: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. |
-| `FERNET_KEY` | _(empty)_ | **Required.** Encrypts AdGuard server passwords at rest. Generate: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The backend refuses to store server passwords if unset. |
+| `SECRET_KEY` | _(insecure placeholder)_ | **Required, min 32 chars.** Signs JWTs and the OIDC session. Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. Startup rejects the shipped placeholder — anyone who has read this repository could otherwise forge an admin token. |
+| `FERNET_KEY` | _(empty)_ | **Required.** Encrypts AdGuard server passwords at rest. Generate: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Validated at startup, so a malformed key fails fast instead of surfacing as a per-server sync error. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `720` | JWT lifetime (12h). |
 | `JWT_ALGORITHM` | `HS256` | Signing algorithm (pinned on decode). |
+| `ALLOW_INSECURE_CONFIG` | `false` | Downgrades the startup checks above to warnings. **Local development only.** |
 
 ## Bootstrap admin
 
@@ -27,14 +32,42 @@ Created only on first start, when no users exist.
 | Variable | Default | Notes |
 |---|---|---|
 | `ADMIN_USERNAME` | `admin` | Bootstrap admin username. |
-| `ADMIN_PASSWORD` | `admin` | **Change this**, and rotate it after first login. |
+| `ADMIN_PASSWORD` | `admin` | **Required.** Startup rejects the literal value `admin`. Rotate it after first login. |
+
+## Login brute-force protection
+
+Failed logins are counted per client IP *and* per username; exceeding the budget
+returns `429` with a `Retry-After` header. Counters reset on a successful login.
+State is per-process — if you run multiple workers, also rate-limit at your
+reverse proxy.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `LOGIN_MAX_ATTEMPTS` | `10` | Failures allowed inside the window. |
+| `LOGIN_WINDOW_SECONDS` | `300` | Sliding window for counting failures. |
+| `LOGIN_LOCKOUT_SECONDS` | `300` | How long a tripped key stays locked. |
 
 ## Reconciliation
 
 | Variable | Default | Notes |
 |---|---|---|
 | `SYNC_INTERVAL_SECONDS` | `60` | How often the engine reconciles every server. |
+| `SYNC_MAX_CONCURRENCY` | `8` | Servers reconciled in parallel. Raise it if a cycle can't finish within `SYNC_INTERVAL_SECONDS` — each unreachable server costs a full timeout. |
+| `ADGUARD_TIMEOUT_SECONDS` | `10` | Per-request timeout when talking to an AdGuard instance. |
 | `DEFAULT_PRUNE` | `false` | Default value of [prune](concepts.md#prune) for new servers. Per-server overridable. |
+
+## Embedded AdGuard UI proxy
+
+The proxy renders a managed server's own UI inside the admin SPA. Those bytes are
+written by the remote AdGuard instance, so the iframe is sandboxed **without**
+`allow-same-origin`: the proxied app lands in an opaque origin and cannot read
+this app's session token.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `UI_PROXY_ENABLED` | `true` | Set to `false` to remove the embedded-UI feature entirely. |
+| `PROXY_TOKEN_TTL_MINUTES` | `60` | Lifetime of the path-scoped UI session cookie. The cookie's user is re-checked against the database on every request, so disabling or demoting a user revokes access immediately. |
+| `UI_PROXY_ALLOW_SAME_ORIGIN` | `false` | Escape hatch for AdGuard builds that refuse to run sandboxed. **Enabling it grants every managed server same-origin access to this app**, including the ability to read your admin token. Startup refuses to run with it on unless `ALLOW_INSECURE_CONFIG=true`. |
 
 ## Provisioning
 
@@ -53,7 +86,10 @@ The public URL must be reachable by the servers you [provision](provisioning.md)
 | Variable | Default | Notes |
 |---|---|---|
 | `FRONTEND_URL` | `http://localhost:5173` | Where OIDC login redirects the SPA back to. With the single-container build, set it to the app's own URL. |
-| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8000` | Comma-separated allowed origins. |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8000` | Comma-separated allowed origins. `*` is rejected at startup: credentialed requests are enabled, so a wildcard is never valid here. |
+
+Setting `PUBLIC_BASE_URL` to an `https://` URL also marks cookies `Secure` and
+enables HSTS.
 
 ## OIDC / Authentik
 
@@ -68,14 +104,35 @@ All optional; OIDC is off unless `OIDC_ENABLED=true` and an issuer is set. See
 | `OIDC_CLIENT_SECRET` | _(empty)_ | OAuth2 client secret. |
 | `OIDC_SCOPES` | `openid email profile` | Requested scopes. |
 | `OIDC_REDIRECT_URI` | `http://localhost:8000/api/auth/oidc/callback` | Must match the IdP provider config. |
-| `OIDC_DEFAULT_ROLE` | `viewer` | Role for first-time SSO users. |
+| `OIDC_DEFAULT_ROLE` | `viewer` | Role for first-time SSO users. Validated at startup. |
 | `OIDC_ADMIN_GROUP` | _(empty)_ | Members of this IdP group become admins. |
+| `OIDC_ALLOW_USERNAME_LINKING` | `false` | Let an OIDC identity adopt a pre-existing local account with a matching username. Off by default: many IdPs let users choose their own `preferred_username`, which would allow claiming someone else's account. Even when enabled, an account that has a local password is never adopted. |
+
+Only an email the provider marked `email_verified` is trusted; an unverified
+address is self-asserted and is ignored.
 
 ## Security notes
 
-- AdGuard server passwords are encrypted at rest with `FERNET_KEY`; the backend refuses
-  to store them if the key is unset.
-- JWTs are signed with `SECRET_KEY`; decode pins the algorithm to prevent
-  algorithm-confusion attacks.
+- **Startup gate.** The app refuses to run with placeholder secrets, a default
+  bootstrap password, a wildcard CORS origin, an invalid OIDC role, or a
+  malformed Fernet key. See the table above.
+- **Passwords at rest.** AdGuard server passwords are encrypted with `FERNET_KEY`;
+  the backend refuses to store them if the key is unset. Revealing a stored
+  password is an admin-only `POST` (never a `GET`, so it stays out of browser
+  history and access logs) and is written to the audit log.
+- **Tokens.** JWTs are signed with `SECRET_KEY` and decode pins the algorithm.
+  Authorization always re-reads the user from the database, so disabling,
+  deleting, or demoting a user takes effect immediately rather than at expiry.
+- **Provisioning.** Values that reach the root-run `install.sh` are validated on
+  input and shell-quoted on output. The endpoints serving the generated admin
+  password and the TLS private key are **single-fetch** — a replay of the
+  (log-visible) token URL returns `410`.
+- **Response headers.** A strict CSP, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options`, `Referrer-Policy` and `Cross-Origin-Opener-Policy` are
+  set on every response except the UI proxy, which is isolated by iframe
+  sandboxing instead.
+- **Container.** The image runs as uid 10001 with a read-only `/app`; only `/data`
+  is writable. A `HEALTHCHECK` polls `/api/health`.
 - Dependency versions are pinned to patched releases — see `backend/requirements.txt`
-  for the CVEs each pin addresses.
+  for the CVEs each pin addresses. CI runs `pip-audit`, `npm audit` and
+  `osv-scanner` on every pipeline.

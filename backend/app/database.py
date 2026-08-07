@@ -1,12 +1,42 @@
 from collections.abc import Generator
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import settings
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, echo=False, connect_args=connect_args)
+_IS_SQLITE = settings.database_url.startswith("sqlite")
+
+connect_args = {"check_same_thread": False} if _IS_SQLITE else {}
+engine = create_engine(
+    settings.database_url,
+    echo=False,
+    connect_args=connect_args,
+    # Recycle dead connections rather than surfacing them as request errors.
+    pool_pre_ping=True,
+)
+
+
+if _IS_SQLITE:
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _connection_record):  # pragma: no cover - driver hook
+        """Make SQLite survive concurrent request + reconcile-loop writes.
+
+        With check_same_thread=False and a background sync loop writing while
+        requests are served, the stock rollback journal serialises everything and
+        a contended write fails immediately with "database is locked". WAL lets
+        readers run during a write, and busy_timeout makes writers wait their
+        turn instead of erroring out.
+        """
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
 
 # Columns added after the first release. create_all() does not ALTER existing
 # tables, so we add any missing ones on startup (SQLite-friendly, no Alembic).
@@ -22,6 +52,10 @@ _ADDED_COLUMNS = {
     "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'", "managed": "BOOLEAN DEFAULT 0"},
     "upstream": {"zone_ids": "TEXT DEFAULT '[]'", "kind": "TEXT DEFAULT 'upstream'"},
     "forwardzone": {"zone_ids": "TEXT DEFAULT '[]'"},
+    "provisioningtoken": {
+        "config_fetched_at": "TIMESTAMP",
+        "key_fetched_at": "TIMESTAMP",
+    },
 }
 
 # Tables whose old single zone_id should be folded into the new zone_ids list.

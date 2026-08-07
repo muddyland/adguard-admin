@@ -88,7 +88,7 @@ cat > .env <<EOF
 SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
 FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-me
+ADMIN_PASSWORD=$(python3 -c "import secrets; print(secrets.token_urlsafe(16))")
 PUBLIC_BASE_URL=http://localhost:8080
 FRONTEND_URL=http://localhost:8080
 CORS_ORIGINS=http://localhost:8080
@@ -133,13 +133,36 @@ local accounts, with optional group→role mapping. See
 
 ## Security notes
 
+- **The app refuses to start** with a placeholder `SECRET_KEY`, a missing or malformed
+  `FERNET_KEY`, a default bootstrap password, a wildcard CORS origin, or an invalid
+  OIDC role. It prints every problem and exits.
 - AdGuard server passwords are encrypted at rest with `FERNET_KEY`. The backend
-  refuses to store them if the key is unset.
+  refuses to store them if the key is unset. Revealing one is admin-only, done over
+  `POST` so it never reaches a URL log, and audit-logged.
 - JWTs are signed with `SECRET_KEY`; decode pins the algorithm to prevent
-  algorithm-confusion attacks.
+  algorithm-confusion attacks. Authorization re-reads the user from the database on
+  every request, so disabling, deleting or demoting an account takes effect at once.
+- Local logins are rate-limited per IP and per username.
+- Provisioning input that reaches the root-run `install.sh` is validated and
+  shell-quoted; the endpoints serving the admin password and TLS private key are
+  single-fetch.
+- The embedded AdGuard UI is sandboxed into an opaque origin, so a compromised
+  managed server cannot read the admin session.
+- Every response carries a strict CSP plus `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy` and `Cross-Origin-Opener-Policy` (HSTS too, over HTTPS).
+- The container runs as uid 10001 with a read-only `/app` and a `HEALTHCHECK`.
 - Dependency versions are pinned to patched releases — see `backend/requirements.txt`
   for the CVEs each pin addresses (python-jose→PyJWT, passlib→pwdlib, Authlib ≥1.7.2,
-  Starlette ≥1.0.1).
+  Starlette ≥1.3.1, cryptography ≥50.0.0). CI runs `pip-audit`, `npm audit` and
+  `osv-scanner` on every pipeline.
+
+## Running the tests
+
+```bash
+docker build -f backend/Dockerfile.test -t adguard-admin-test backend
+docker run --rm adguard-admin-test              # pytest
+docker run --rm adguard-admin-test ruff check app tests
+```
 
 ## API overview
 

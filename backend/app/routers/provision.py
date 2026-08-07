@@ -14,6 +14,9 @@ Flow:
 """
 from __future__ import annotations
 
+import logging
+import re
+import shlex
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -32,8 +35,16 @@ from ..models import (
 )
 from ..schemas import ProvisionComplete, ProvisionRequest, ProvisionTokenRead
 from ..security import decrypt_secret, encrypt_secret, generate_token
+from ..validators import (
+    MAX_NAME_LENGTH,
+    ValidationError,
+    format_host_port,
+    validate_host,
+)
 
 router = APIRouter(prefix="/api/provision", tags=["provision"])
+
+logger = logging.getLogger("adguard_admin.provision")
 
 
 def _command(token: str) -> str:
@@ -140,27 +151,60 @@ def delete_token(token_id: int, _: RequireEditor, session: SessionDep):
 # --------------------------------------------------------------------------- #
 # Token-authenticated endpoints (consumed by install.sh on the target box)
 # --------------------------------------------------------------------------- #
+def _consume_once(session: SessionDep, t: ProvisioningToken, field: str) -> None:
+    """Mark a secret-bearing endpoint as used, refusing a second fetch.
+
+    The provisioning token travels in a URL that lands in shell history, the
+    operator's terminal and any reverse-proxy access log on either side. Serving
+    the admin password and the TLS private key repeatedly for the whole 24h TTL
+    turned a leaked URL into a lasting credential. One fetch is all install.sh
+    needs.
+    """
+    if getattr(t, field) is not None:
+        logger.warning(
+            "Refused repeat fetch of %s for provisioning token id=%s (%s); "
+            "the token may have leaked.", field, t.id, t.name,
+        )
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This provisioning secret has already been retrieved and cannot be "
+                "fetched again. Revoke the token and issue a new one."
+            ),
+        )
+    setattr(t, field, datetime.now(timezone.utc))
+    session.add(t)
+    session.commit()
+
+
 @router.get("/{token}/config", response_class=PlainTextResponse)
 def get_config(token: str, session: SessionDep):
-    """Shell-sourceable config (avoids a jq dependency on the target)."""
+    """Shell-sourceable config (avoids a jq dependency on the target).
+
+    install.sh `eval`s this output as root, so every value is shell-quoted.
+    Quoting alone is not sufficient for values that could carry a newline, so
+    name/address are also validated when the token is created.
+    """
     t = _valid_pending(session, token)
+    _consume_once(session, t, "config_fetched_at")
     password = decrypt_secret(t.admin_password_enc) or ""
     lines = [
-        f"METHOD={t.method.value}",
+        f"METHOD={shlex.quote(t.method.value)}",
         f"SSL={'true' if t.ssl_enabled else 'false'}",
-        f"HTTP_PORT={t.http_port}",
-        f"HTTPS_PORT={t.https_port}",
-        f"DNS_PORT={t.dns_port}",
-        f"ADMIN_USER='{t.admin_username}'",
-        f"ADMIN_PASSWORD='{password}'",
-        f"CONNECT_ADDRESS='{t.connect_address or ''}'",
-        f"SERVER_NAME='{t.name}'",
+        f"HTTP_PORT={int(t.http_port)}",
+        f"HTTPS_PORT={int(t.https_port)}",
+        f"DNS_PORT={int(t.dns_port)}",
+        f"ADMIN_USER={shlex.quote(t.admin_username)}",
+        f"ADMIN_PASSWORD={shlex.quote(password)}",
+        f"CONNECT_ADDRESS={shlex.quote(t.connect_address or '')}",
+        f"SERVER_NAME={shlex.quote(t.name)}",
     ]
     return "\n".join(lines) + "\n"
 
 
 @router.get("/{token}/cert.pem", response_class=PlainTextResponse)
 def get_cert(token: str, session: SessionDep):
+    # The certificate is public by nature, so this one stays repeatable.
     t = _valid_pending(session, token)
     if not t.ssl_enabled or not t.tls_cert:
         raise HTTPException(status_code=404, detail="No certificate for this token")
@@ -173,6 +217,7 @@ def get_key(token: str, session: SessionDep):
     key = decrypt_secret(t.tls_key_enc) if t.ssl_enabled else None
     if not key:
         raise HTTPException(status_code=404, detail="No private key for this token")
+    _consume_once(session, t, "key_fetched_at")
     return key
 
 
@@ -192,12 +237,19 @@ def complete(token: str, payload: ProvisionComplete, session: SessionDep):
     if not address:
         raise HTTPException(status_code=400, detail="No address provided and none preconfigured")
 
+    # Re-validate: `address` may have come from t.connect_address, and older
+    # tokens predate schema-level validation.
+    try:
+        address = validate_host(address, field="address")
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     http_port = payload.http_port or t.http_port
     https_port = payload.https_port or t.https_port
     if t.ssl_enabled:
-        url = f"https://{address}:{https_port}"
+        url = f"https://{format_host_port(address, https_port)}"
     else:
-        url = f"http://{address}:{http_port}"
+        url = f"http://{format_host_port(address, http_port)}"
 
     server = Server(
         name=t.name,
@@ -225,15 +277,25 @@ def complete(token: str, payload: ProvisionComplete, session: SessionDep):
 # --------------------------------------------------------------------------- #
 # install.sh template
 # --------------------------------------------------------------------------- #
+def _comment_safe(value: str) -> str:
+    """Collapse anything that could terminate a shell comment line.
+
+    Names are validated on creation, but tokens issued before that validation
+    existed are still in the database, and this string is rendered into a script
+    that runs as root.
+    """
+    return re.sub(r"[\x00-\x1f\x7f]", " ", value or "")[:MAX_NAME_LENGTH]
+
+
 def _render_install_script(t: ProvisioningToken) -> str:
     base = settings.public_base_url.rstrip("/")
     return f"""#!/usr/bin/env bash
-# AdGuard Admin — automated provisioning for "{t.name}"
+# AdGuard Admin — automated provisioning for {_comment_safe(t.name)}
 # This script is generated for a single token and installs + registers a server.
 set -euo pipefail
 
-BASE_URL="{base}"
-TOKEN="{t.token}"
+BASE_URL={shlex.quote(base)}
+TOKEN={shlex.quote(t.token)}
 
 green(){{ printf '\\033[0;32m[adguard-admin]\\033[0m %s\\n' "$*"; }}
 red(){{ printf '\\033[0;31m[adguard-admin]\\033[0m %s\\n' "$*" >&2; }}

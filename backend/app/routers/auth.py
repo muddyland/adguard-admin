@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from authlib.integrations.starlette_client import OAuthError
@@ -10,19 +11,68 @@ from ..config import settings
 from ..deps import CurrentUser, SessionDep
 from ..models import Role, User
 from ..oidc import oauth, oidc_configured
+from ..ratelimit import RateLimiter
 from ..schemas import Token, UserRead
 from ..security import create_access_token, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+logger = logging.getLogger("adguard_admin.auth")
+
+# Brute-force protection for local logins. Keyed by client IP *and* by username
+# so that neither a single source hammering many accounts nor a distributed
+# attempt against one account slips through.
+login_limiter = RateLimiter(
+    max_attempts=settings.login_max_attempts,
+    window_seconds=settings.login_window_seconds,
+    lockout_seconds=settings.login_lockout_seconds,
+)
+
+
+def client_ip(request: Request) -> str:
+    """Best-effort client address.
+
+    X-Forwarded-For is only honoured when uvicorn is running with
+    --proxy-headers behind a trusted proxy; we read request.client, which
+    uvicorn has already populated from that header in that case.
+    """
+    return request.client.host if request.client else "unknown"
+
 
 @router.post("/token", response_model=Token)
-def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], session: SessionDep):
+def login(
+    request: Request,
+    form: Annotated[OAuth2PasswordRequestForm, Depends()],
+    session: SessionDep,
+):
+    ip = client_ip(request)
+    keys = [f"ip:{ip}", f"user:{form.username.lower()}"]
+
+    for key in keys:
+        retry_after = login_limiter.retry_after(key)
+        if retry_after:
+            logger.warning("Login throttled for %s (retry in %ss)", key, retry_after)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
     user = session.exec(select(User).where(User.username == form.username)).first()
     if not user or not user.hashed_password or not verify_password(form.password, user.hashed_password):
+        for key in keys:
+            login_limiter.record_failure(key)
+        logger.info("Failed login for username=%r from %s", form.username, ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
     if not user.is_active:
+        # Counts as a failure: otherwise a disabled account is an unlimited
+        # oracle for testing passwords.
+        for key in keys:
+            login_limiter.record_failure(key)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+
+    for key in keys:
+        login_limiter.record_success(key)
     token = create_access_token(str(user.id), {"role": user.role.value, "username": user.username})
     return Token(access_token=token)
 
@@ -48,6 +98,41 @@ async def oidc_login(request: Request):
     return await oauth.authentik.authorize_redirect(request, settings.oidc_redirect_uri)
 
 
+def _resolve_oidc_user(session, sub: str, username: str, email: str | None) -> User | None:
+    """Find the account this OIDC subject already owns, if any.
+
+    Matching on `sub` is always safe — it is the provider's stable identifier and
+    we set it ourselves. Matching on a *username* is not: `preferred_username` is
+    attacker-controlled at many IdPs, so claiming an existing local account by
+    naming yourself after it would be account takeover. Username linking is
+    therefore opt-in (OIDC_ALLOW_USERNAME_LINKING) and still refuses any account
+    that has a local password, which is the case that actually matters.
+    """
+    user = session.exec(select(User).where(User.oidc_sub == sub)).first()
+    if user:
+        return user
+
+    if not settings.oidc_allow_username_linking:
+        return None
+
+    candidate = session.exec(select(User).where(User.username == username)).first()
+    if candidate is None:
+        return None
+    if candidate.oidc_sub and candidate.oidc_sub != sub:
+        logger.warning(
+            "OIDC sub %r tried to link to account %r already bound to a different subject",
+            sub, username,
+        )
+        return None
+    if candidate.hashed_password:
+        logger.warning(
+            "OIDC sub %r matched local account %r by username; refusing to adopt an "
+            "account that has a local password.", sub, username,
+        )
+        return None
+    return candidate
+
+
 @router.get("/oidc/callback")
 async def oidc_callback(request: Request, session: SessionDep):
     if not oidc_configured():
@@ -62,18 +147,28 @@ async def oidc_callback(request: Request, session: SessionDep):
     if not sub:
         raise HTTPException(status_code=400, detail="OIDC response missing subject")
 
-    email = claims.get("email")
+    # Only trust an address the provider says it verified — an unverified email
+    # is self-asserted and must not become an identity we key anything on.
+    email = claims.get("email") if claims.get("email_verified") else None
     username = claims.get("preferred_username") or email or sub
     groups = claims.get("groups") or []
 
-    # Match an existing user by oidc_sub, then by username, else provision one.
-    user = session.exec(select(User).where(User.oidc_sub == sub)).first()
-    if not user:
-        user = session.exec(select(User).where(User.username == username)).first()
+    is_admin_group = bool(settings.oidc_admin_group and settings.oidc_admin_group in groups)
 
-    role = Role.admin if (settings.oidc_admin_group and settings.oidc_admin_group in groups) else Role(settings.oidc_default_role)
+    user = _resolve_oidc_user(session, sub, username, email)
 
     if not user:
+        # Never silently collide with an existing local account.
+        if session.exec(select(User).where(User.username == username)).first():
+            logger.warning("OIDC login for %r blocked: username already taken locally", username)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "An account with this username already exists. An administrator must "
+                    "link it to your identity provider."
+                ),
+            )
+        role = Role.admin if is_admin_group else Role(settings.oidc_default_role)
         user = User(username=username, email=email, oidc_sub=sub, role=role, is_active=True)
         session.add(user)
     else:
@@ -81,7 +176,7 @@ async def oidc_callback(request: Request, session: SessionDep):
         if email:
             user.email = email
         # Promote to admin if they're in the admin group; never auto-demote.
-        if settings.oidc_admin_group and settings.oidc_admin_group in groups:
+        if is_admin_group:
             user.role = Role.admin
         session.add(user)
     session.commit()

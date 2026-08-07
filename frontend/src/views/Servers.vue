@@ -49,10 +49,15 @@ const credsTarget = ref(null)
 const creds = ref(null)
 const credsReveal = ref(false)
 const credsCopied = ref('')
+const credsError = ref('')
 // Embedded AdGuard UI modal
 const uiTarget = ref(null)
 const uiSrc = ref('')
 const uiError = ref('')
+// Fallback if an older backend doesn't send one. Note the absence of
+// allow-same-origin: that is what keeps the proxied UI out of our origin.
+const DEFAULT_UI_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads'
+const uiSandbox = ref(DEFAULT_UI_SANDBOX)
 
 function openTab(s) {
   window.open(s.url, '_blank', 'noopener')
@@ -66,6 +71,10 @@ async function openUi(s) {
     // Mint the path-scoped cookie, then point the iframe at the proxy.
     const { data } = await api.post(`/servers/${s.id}/ui-session`)
     uiSrc.value = data.src
+    // The backend decides the sandbox. It deliberately omits allow-same-origin
+    // so the remote AdGuard UI runs in an opaque origin and cannot read this
+    // app's localStorage (which holds the admin token).
+    uiSandbox.value = data.sandbox || DEFAULT_UI_SANDBOX
   } catch (e) {
     uiError.value = e.response?.data?.detail || 'Could not start UI session'
   }
@@ -201,9 +210,18 @@ async function runImportFiltering() {
 async function openCreds(s) {
   credsTarget.value = s
   creds.value = null
+  credsError.value = ''
   credsReveal.value = false
   credsCopied.value = ''
-  creds.value = (await api.get(`/servers/${s.id}/credentials`)).data
+  try {
+    // POST, not GET: a credential read must not be recorded in browser history
+    // or any access log along the way. Admin-only and audit-logged server-side.
+    creds.value = (await api.post(`/servers/${s.id}/credentials`)).data
+  } catch (e) {
+    credsError.value = e.response?.status === 403
+      ? 'Only administrators can reveal stored server credentials.'
+      : e.response?.data?.detail || 'Could not read credentials'
+  }
 }
 
 async function copyCred(text, which) {
@@ -294,7 +312,7 @@ onMounted(load)
                   <button class="menu-item" :disabled="syncingId === s.id" @click="sync(s)">
                     {{ syncingId === s.id ? 'Syncing…' : 'Sync now' }}
                   </button>
-                  <button class="menu-item" @click="openCreds(s)">Show credentials</button>
+                  <button v-if="auth.isAdmin" class="menu-item" @click="openCreds(s)">Show credentials</button>
                   <div class="menu-divider"></div>
                   <button class="menu-item" @click="openImport(s)">Import records</button>
                   <button class="menu-item" @click="openImportSettings(s)">Import DNS settings</button>
@@ -432,7 +450,14 @@ onMounted(load)
         </div>
       </div>
       <div v-if="uiError" class="alert alert-error" style="margin:12px">{{ uiError }}</div>
-      <iframe v-else-if="uiSrc" :src="uiSrc" class="ui-frame" title="AdGuard Home"></iframe>
+      <iframe
+        v-else-if="uiSrc"
+        :src="uiSrc"
+        :sandbox="uiSandbox"
+        referrerpolicy="no-referrer"
+        class="ui-frame"
+        title="AdGuard Home"
+      ></iframe>
       <div v-else class="ui-frame" style="display:grid;place-items:center"><span class="muted">Starting session…</span></div>
       <div class="ui-frame-note muted">
         Proxied through AdGuard Admin with auto-login. If the panel stays blank, this instance’s UI
@@ -466,6 +491,7 @@ onMounted(load)
         <span v-else class="muted">No password stored for this server.</span>
       </div>
     </template>
+    <div v-else-if="credsError" class="alert alert-error">{{ credsError }}</div>
     <div v-else class="muted">Loading…</div>
     <template #footer>
       <button class="btn btn-primary" @click="credsTarget = null">Close</button>

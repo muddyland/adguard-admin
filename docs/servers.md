@@ -20,6 +20,21 @@ which zone each box belongs to.
 Use **Test** to probe connectivity and credentials before saving. Once saved and
 reachable, the server flips to **online** and starts receiving the desired state.
 
+**Show credentials** decrypts and displays the stored password. It is
+**admin-only** and every use is written to the audit log — an editor can already
+*use* the credential through the embedded UI, but extracting the plaintext is a
+separate, higher-privilege act.
+
+### Embedded UI
+
+**Open UI (embedded)** proxies the server's own AdGuard interface into a modal.
+Those bytes come from the remote instance, not from this app, so the iframe is
+sandboxed into an opaque origin — a compromised managed server cannot read your
+admin session. The UI session is authorized by a short-lived cookie whose user is
+re-checked on every request, so disabling or demoting an account revokes embedded
+access immediately. See [`UI_PROXY_ENABLED`](configuration.md#embedded-adguard-ui-proxy)
+to turn the feature off entirely.
+
 > Starting from scratch with no AdGuard Home installed yet? Use
 > [Provisioning](provisioning.md) instead — it installs and registers the server for you.
 

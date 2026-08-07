@@ -3,14 +3,14 @@ import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, func, select
 from starlette.middleware.sessions import SessionMiddleware
 
-from .config import settings
+from .config import config_problems, settings
 from .database import engine, init_db
 from .deps import CurrentUser
 from .models import DNSRecord, Role, Server, SyncStatus, User, Zone
@@ -41,6 +41,31 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("image/svg+xml", ".svg")
 
 
+class InsecureConfiguration(RuntimeError):
+    """Raised at startup when the app would run with unsafe defaults."""
+
+
+def check_configuration() -> None:
+    """Refuse to start with placeholder secrets or a wide-open CORS policy.
+
+    Previously the app happily booted with the shipped SECRET_KEY, which lets
+    anyone who has read the repository forge an admin token. Set
+    ALLOW_INSECURE_CONFIG=true to downgrade these to warnings for local work.
+    """
+    problems = config_problems(settings)
+    if not problems:
+        return
+    if settings.allow_insecure_config:
+        for p in problems:
+            logger.warning("INSECURE CONFIG (allowed by ALLOW_INSECURE_CONFIG): %s", p)
+        return
+    listing = "\n".join(f"  - {p}" for p in problems)
+    raise InsecureConfiguration(
+        f"Refusing to start with an insecure configuration:\n{listing}\n"
+        "Fix these, or set ALLOW_INSECURE_CONFIG=true for local development only."
+    )
+
+
 def bootstrap_admin() -> None:
     with Session(engine) as session:
         if session.exec(select(User)).first() is None:
@@ -60,6 +85,7 @@ def bootstrap_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    check_configuration()
     init_db()
     bootstrap_admin()
     sync_manager.start()
@@ -71,14 +97,73 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 # SessionMiddleware is required by Authlib to hold OIDC state/nonce across the redirect.
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, https_only=False)
+# It only ever holds transient OIDC state, so keep it short-lived and, when we're
+# reachable over HTTPS, HTTPS-only.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    session_cookie="adguard_admin_session",
+    https_only=settings.secure_cookies,
+    same_site="lax",
+    max_age=600,
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# The API is JSON-only and the SPA loads no third-party resources, so a strict
+# policy costs nothing. The UI proxy needs its own rules (it renders a remote
+# app's HTML), so it opts out here and is isolated by iframe sandboxing instead.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'; "
+    "base-uri 'none'; "
+    "object-src 'none'"
+)
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    is_proxy = bool(proxy.UI_PROXY_PATH_RE.match(request.url.path))
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+
+    if not is_proxy:
+        # The proxied AdGuard UI must stay frameable by us and keeps its own
+        # (stripped) headers; everything else gets the strict treatment.
+        response.headers.setdefault("Content-Security-Policy", _CSP)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+
+    if settings.secure_cookies:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+# Registered last, so it is the OUTERMOST middleware and runs before
+# CORSMiddleware. The sandboxed UI-proxy iframe has an opaque origin and sends
+# `Origin: null`, which CORSMiddleware would reject with a 400 before routing.
+# Only the proxy prefix is handled here; the rest of /api keeps the strict
+# app-wide policy.
+@app.middleware("http")
+async def ui_proxy_preflight(request: Request, call_next):
+    if proxy.is_ui_proxy_preflight(request):
+        return proxy.preflight_response(request)
+    return await call_next(request)
 
 app.include_router(auth.router)
 app.include_router(users.router)

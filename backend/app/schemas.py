@@ -1,8 +1,14 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from .validators import (
+    validate_display_name,
+    validate_host,
+    validate_port,
+    validate_server_url,
+)
 from .models import (
     ConfigScope,
     DnsServerKind,
@@ -117,6 +123,16 @@ class ServerCreate(BaseModel):
     manage_upstreams: bool = False
     manage_filtering: bool = False
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return validate_display_name(v, field="name")
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: str) -> str:
+        return validate_server_url(v)
+
 
 class ServerUpdate(BaseModel):
     name: Optional[str] = None
@@ -128,6 +144,20 @@ class ServerUpdate(BaseModel):
     prune: Optional[bool] = None
     manage_upstreams: Optional[bool] = None
     manage_filtering: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return validate_display_name(v, field="name")
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return validate_server_url(v)
 
 
 # ---- DNS records ----
@@ -321,6 +351,9 @@ class CatalogService(BaseModel):
 
 
 # ---- Provisioning ----
+# These fields are interpolated into a bash script that runs as root on the
+# target host and into the URL the reconcile loop later connects to, so they are
+# validated here rather than only quoted at render time.
 class ProvisionRequest(BaseModel):
     name: str
     zone_id: Optional[int] = None
@@ -330,6 +363,25 @@ class ProvisionRequest(BaseModel):
     http_port: Optional[int] = None
     https_port: Optional[int] = None
     prune: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return validate_display_name(v, field="name")
+
+    @field_validator("connect_address")
+    @classmethod
+    def _check_address(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return None
+        return validate_host(v, field="connect_address")
+
+    @field_validator("http_port", "https_port")
+    @classmethod
+    def _check_ports(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        return validate_port(v, field="port")
 
 
 class ProvisionTokenRead(BaseModel):
@@ -351,9 +403,27 @@ class ProvisionTokenRead(BaseModel):
 
 
 class ProvisionComplete(BaseModel):
+    """Posted by install.sh on the target box. Token-authenticated only, so the
+    address it reports becomes a URL this app connects to with credentials and
+    reverse-proxies — it must be a plain host, never an arbitrary URL."""
+
     address: Optional[str] = None
     http_port: Optional[int] = None
     https_port: Optional[int] = None
+
+    @field_validator("address")
+    @classmethod
+    def _check_address(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return None
+        return validate_host(v, field="address")
+
+    @field_validator("http_port", "https_port")
+    @classmethod
+    def _check_ports(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        return validate_port(v, field="port")
 
 
 # ---- Sync ----

@@ -7,8 +7,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
       FERNET_KEY: ${FERNET_KEY:?set FERNET_KEY in .env}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      # No default: startup rejects "admin", so this must be set explicitly.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-60}
+      SYNC_MAX_CONCURRENCY: ${SYNC_MAX_CONCURRENCY:-8}
       # UI and API share one origin now; default to the published port below.
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
@@ -22,11 +24,18 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8080/api/auth/oidc/callback}
       OIDC_ADMIN_GROUP: ${OIDC_ADMIN_GROUP:-}
+      OIDC_ALLOW_USERNAME_LINKING: ${OIDC_ALLOW_USERNAME_LINKING:-false}
     volumes:
       - adguard_admin_data:/data
     ports:
       # host:container — UI + API both served on container port 8000.
       - "8080:8000"
+    # The image already runs as an unprivileged user; these close off the rest.
+    read_only: false          # SQLite needs to write /data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   adguard_admin_data:

@@ -1,6 +1,7 @@
 stages:
   - lint
   - test
+  - security
   - build
 
 # ── Shared bases ──────────────────────────────────────────────────────────
@@ -9,7 +10,7 @@ stages:
   image: python:3.12-slim
   tags: [saas-linux-small-amd64]
   before_script:
-    - pip install --quiet -r backend/requirements.txt
+    - pip install --quiet -r backend/requirements-dev.txt
 
 .node_base:
   image: node:22-alpine
@@ -24,35 +25,56 @@ lint:backend:
   image: python:3.12-slim
   tags: [saas-linux-small-amd64]
   before_script:
-    - pip install --quiet ruff
+    - pip install --quiet ruff==0.14.4
   script:
-    - cd backend && ruff check app
+    - cd backend && ruff check app tests
 
 # ── Test ──────────────────────────────────────────────────────────────────
 
 test:backend:
   extends: .python_base
   stage: test
-  variables:
-    DATABASE_URL: "sqlite:///./ci.db"
-    FERNET_KEY: "ci-placeholder-key-generated-below"
   script:
     - cd backend
-    # Generate a real Fernet key for the run (server creds need one).
+    # conftest.py provisions its own SECRET_KEY / FERNET_KEY, so the suite
+    # exercises the same startup checks a real deployment does.
+    - pytest -q
+
+test:startup-smoke:
+  extends: .python_base
+  stage: test
+  script:
+    - cd backend
+    - export SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
     - export FERNET_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-    # Import smoke test — fails fast on broken imports / wiring.
-    - python -c "import app.main; print('app import OK')"
-    # Boot the app via TestClient and hit health + an authed flow.
+    - export ADMIN_PASSWORD=$(python -c "import secrets; print(secrets.token_urlsafe(16))")
+    - export DATABASE_URL="sqlite:///./ci.db"
+    - export SYNC_INTERVAL_SECONDS=3600
+    # Boot through the real lifespan (config gate, migrations, bootstrap admin).
     - |
       python -c "
+      import os
       from fastapi.testclient import TestClient
       from app.main import app
       with TestClient(app) as c:
           assert c.get('/api/health').json()['status'] == 'ok'
-          tok = c.post('/api/auth/token', data={'username':'admin','password':'admin'}).json()['access_token']
+          tok = c.post('/api/auth/token', data={
+              'username': 'admin', 'password': os.environ['ADMIN_PASSWORD']
+          }).json()['access_token']
           h = {'Authorization': f'Bearer {tok}'}
           assert c.get('/api/auth/me', headers=h).json()['role'] == 'admin'
-          print('smoke test OK')
+          assert 'content-security-policy' in c.get('/api/health').headers
+          print('startup smoke test OK')
+      "
+    # The gate must actually refuse a placeholder secret.
+    - |
+      SECRET_KEY="change-me-please-generate-a-long-random-string" python -c "
+      from fastapi.testclient import TestClient
+      from app.config import Settings, config_problems
+      s = Settings()
+      problems = config_problems(s)
+      assert any('SECRET_KEY' in p for p in problems), problems
+      print('insecure-config gate OK')
       "
 
 build:frontend:
@@ -64,6 +86,38 @@ build:frontend:
     paths: [frontend/dist]
     expire_in: 14 days
 
+# ── Security ────────────────────────────────────────────────────────────────
+# Dependency vulnerability scanning. These are the checks that would have caught
+# the cryptography / pydantic-settings / postcss advisories without a manual
+# audit, so they run on every pipeline.
+
+security:pip-audit:
+  stage: security
+  image: python:3.12-slim
+  tags: [saas-linux-small-amd64]
+  before_script:
+    - pip install --quiet pip-audit==2.9.0
+  script:
+    - pip-audit --requirement backend/requirements.txt --strict --desc
+
+security:npm-audit:
+  stage: security
+  image: node:22-alpine
+  tags: [saas-linux-small-amd64]
+  script:
+    - cd frontend
+    # Fails on moderate and above, including transitive dependencies.
+    - npm audit --audit-level=moderate
+
+security:osv-scanner:
+  stage: security
+  image:
+    name: ghcr.io/google/osv-scanner:latest
+    entrypoint: [""]
+  tags: [saas-linux-small-amd64]
+  script:
+    - /osv-scanner scan source --recursive .
+
 # ── Build image ─────────────────────────────────────────────────────────────
 # Single combined image: the multi-stage Dockerfile builds the Vue SPA and bakes
 # it into the FastAPI image, which serves both the API and the UI.
@@ -71,8 +125,8 @@ build:frontend:
 build:image:
   stage: build
   tags: [saas-linux-small-amd64]
-  image: docker:24.0.5
-  services: [docker:24.0.5-dind]
+  image: docker:28.6.0
+  services: [docker:28.6.0-dind]
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
@@ -80,6 +134,11 @@ build:image:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - docker build --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
+    # The image must not run as root.
+    - |
+      UID_IN_IMAGE=$(docker run --rm --entrypoint sh $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME -c 'id -u')
+      test "$UID_IN_IMAGE" != "0" || { echo "image runs as root"; exit 1; }
+      echo "image runs as uid $UID_IN_IMAGE"
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
   rules:
     - if: '$CI_COMMIT_REF_NAME == "main"'

@@ -1,3 +1,4 @@
+import logging
 import re
 
 from fastapi import APIRouter, HTTPException, status
@@ -5,7 +6,7 @@ from sqlmodel import select
 
 from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
-from ..deps import CurrentUser, RequireEditor, SessionDep
+from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
 from ..models import (
     BlockedService,
     ConfigScope,
@@ -23,6 +24,8 @@ from ..schemas import ServerCreate, ServerRead, ServerUpdate
 from ..security import decrypt_secret, encrypt_secret
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
+
+logger = logging.getLogger("adguard_admin.servers")
 
 # Matches AdGuard's per-domain upstream syntax: [/domain1/domain2/]upstream
 _FORWARD_RE = re.compile(r"^\[/(?P<domains>.+?)/\]\s*(?P<addrs>.+)$")
@@ -364,13 +367,23 @@ async def import_filtering(
     }
 
 
-@router.get("/{server_id}/credentials")
-def get_credentials(server_id: int, _: RequireEditor, session: SessionDep):
+@router.post("/{server_id}/credentials")
+def reveal_credentials(server_id: int, admin: RequireAdmin, session: SessionDep):
     """Reveal the stored AdGuard login for this server (e.g. a generated one from
-    provisioning). Editor-only; the password is decrypted on demand."""
+    provisioning).
+
+    POST rather than GET so the URL — and therefore browser history, referrers
+    and reverse-proxy access logs — never records a credential read. Admin-only
+    and audit-logged: an editor can already *use* the credential through the UI
+    proxy, but extracting the plaintext is a separate, higher-privilege act.
+    """
     server = session.get(Server, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+    logger.warning(
+        "Credential reveal: user=%s (id=%s) read the stored password for server %r (id=%s)",
+        admin.username, admin.id, server.name, server.id,
+    )
     return {
         "username": server.username,
         "password": decrypt_secret(server.password_enc),

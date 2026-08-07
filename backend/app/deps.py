@@ -43,9 +43,15 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 _ROLE_RANK = {Role.viewer: 0, Role.editor: 1, Role.admin: 2}
 
 
+def user_has_role(user: User, minimum: Role) -> bool:
+    """True when `user` holds at least `minimum`. Shared with the UI proxy, which
+    authorizes from a cookie rather than through the dependency chain."""
+    return _ROLE_RANK.get(user.role, -1) >= _ROLE_RANK[minimum]
+
+
 def require_role(minimum: Role):
     def checker(user: CurrentUser) -> User:
-        if _ROLE_RANK[user.role] < _ROLE_RANK[minimum]:
+        if not user_has_role(user, minimum):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Requires {minimum.value} role or higher",
