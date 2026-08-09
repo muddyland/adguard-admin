@@ -70,29 +70,29 @@ fleet of slow or unreachable servers cannot starve the API of connections.
 
 ## Embedded AdGuard UI proxy
 
-The proxy renders a managed server's own UI inside the admin SPA. Those bytes are
-written by the remote AdGuard instance, so we would rather they could not touch
-this app's origin.
+Renders a managed server's own AdGuard interface inside the admin SPA.
 
-How well that works depends on your scheme, because the frame's auth cookie has
-to match the sandbox:
+**This is a trust decision, not a sandboxed one.** The proxied HTML and
+JavaScript are written by the remote AdGuard instance and run in *this app's*
+origin, so a compromised or hostile managed server can read your admin session
+token out of `localStorage`.
 
-| `PUBLIC_BASE_URL` | Isolation | What happens |
-|---|---|---|
-| `https://…` | `opaque` | Sandboxed **without** `allow-same-origin`. The proxied app gets an opaque origin and cannot read this app's session token. Its cookie is `SameSite=None; Secure`. |
-| `http://…` | `same-origin-http` | Falls back to `allow-same-origin`, with a warning logged at startup. A `SameSite=None` cookie is rejected by browsers without `Secure`, so a strict sandbox could never authenticate — the embedded UI would simply not load. |
+Confining the frame to an opaque origin (an iframe `sandbox` without
+`allow-same-origin`) was tried and does not work. AdGuard Home's dashboard reads
+`window.localStorage` from an inline script and `document.cookie` from its main
+bundle; both throw `SecurityError` in an opaque origin and its UI never starts.
+Verified against AdGuard Home v0.107.78. The app logs this trade-off at startup.
 
-**Serve the admin app over HTTPS** if you want the embedded UI isolated. If you
-can't, and you don't fully trust every managed server, set `UI_PROXY_ENABLED=false`
-and use *Open UI in new tab* instead.
-
-`/api/servers/{id}/ui-session` reports the active mode in its `isolation` field.
+If you do not trust every managed server, set `UI_PROXY_ENABLED=false`. The
+*Open UI in new tab* action still works and involves no proxying at all.
 
 | Variable | Default | Notes |
 |---|---|---|
 | `UI_PROXY_ENABLED` | `true` | Set to `false` to remove the embedded-UI feature entirely. |
 | `PROXY_TOKEN_TTL_MINUTES` | `60` | Lifetime of the path-scoped UI session cookie. The cookie's user is re-checked against the database on every request, so disabling or demoting a user revokes access immediately. |
-| `UI_PROXY_ALLOW_SAME_ORIGIN` | `false` | Escape hatch for AdGuard builds that refuse to run sandboxed. **Enabling it grants every managed server same-origin access to this app**, including the ability to read your admin token. Startup refuses to run with it on unless `ALLOW_INSECURE_CONFIG=true`. |
+
+`/api/servers/{id}/ui-session` reports the active mode in its `isolation` field
+(currently always `same-origin`) and the `sandbox` attribute the SPA applies.
 
 ## Provisioning
 

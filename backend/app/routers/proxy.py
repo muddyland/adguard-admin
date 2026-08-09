@@ -10,15 +10,20 @@ We proxy it under /api/servers/{id}/ui/ and:
 
 Trust boundary
 --------------
-The proxied bytes are written by the remote AdGuard instance, not by us. If they
-were rendered in this app's origin, a compromised or hostile managed server
-could read the admin session token straight out of localStorage. So the SPA
-embeds the iframe with `sandbox` and *without* `allow-same-origin`, which puts
-the proxied document in an opaque origin: it cannot reach the parent's DOM or
-storage. That in turn makes its own fetch/XHR calls cross-origin (Origin: null),
-so we emit permissive CORS headers on *this* prefix only — the rest of /api
-stays unreachable to it. The admin API authenticates with a Bearer header rather
-than an ambient cookie, so the sandboxed frame also has nothing to replay.
+The proxied bytes are written by the remote AdGuard instance, not by us, and
+they run in THIS app's origin. A compromised or hostile managed server can
+therefore read the admin session token out of localStorage.
+
+Confining the frame to an opaque origin (sandbox without `allow-same-origin`)
+was tried and does not work: AdGuard Home's dashboard reads window.localStorage
+from an inline script and document.cookie from its main bundle, both of which
+throw SecurityError in an opaque origin, so its UI never starts. Verified
+against AdGuard Home v0.107.78.
+
+So the embedded UI is an explicit trust decision, not a sandboxed one. It is
+announced at startup, and UI_PROXY_ENABLED=false turns it off for operators who
+don't trust every managed server. The genuine fix is to serve this prefix from a
+separate hostname; that needs a second origin and is not wired up here.
 
 Iframe sub-requests can't carry our JWT header, so access is authorized by a
 short-lived, path-scoped cookie minted by /ui-session (editor-only). The cookie
@@ -208,17 +213,15 @@ def ui_session(server_id: int, user: RequireEditor, session: SessionDep, respons
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     prefix = f"/api/servers/{server_id}/ui"
-    opaque = isolation_mode() == "opaque"
     response.set_cookie(
         key=f"aghproxy_{server_id}",
         value=create_proxy_token(server_id, user.id),
         path=prefix,
         httponly=True,
-        # Must match the sandbox: an opaque-origin frame's sub-requests are
-        # cross-site, so Lax would drop the cookie and nothing would load.
-        # Confidentiality still holds either way — HttpOnly keeps it away from
-        # script, and the value is a signed, server-scoped, short-lived token.
-        samesite="none" if opaque else "lax",
+        # The frame is same-origin, so Lax is both sufficient and correct.
+        # HttpOnly keeps the value away from script, and it is a signed,
+        # server-scoped, short-lived token.
+        samesite="lax",
         secure=settings.secure_cookies,
         max_age=settings.proxy_token_ttl_minutes * 60,
     )
@@ -230,36 +233,34 @@ def ui_session(server_id: int, user: RequireEditor, session: SessionDep, respons
     }
 
 
-def strict_isolation_possible() -> bool:
-    """Whether the proxied UI can be confined to an opaque origin.
-
-    A sandboxed frame without allow-same-origin has an opaque origin, which
-    makes all of its requests cross-site for cookie purposes. The UI session
-    cookie must therefore be SameSite=None, and browsers only accept that
-    together with Secure — i.e. the admin app has to be served over HTTPS.
-
-    Over plain HTTP the cookie would simply never be sent and the embedded UI
-    would fail to authenticate, so we fall back to a same-origin frame.
-    """
-    return settings.secure_cookies
-
-
 def isolation_mode() -> str:
-    if settings.ui_proxy_allow_same_origin:
-        return "same-origin-forced"     # explicit operator override
-    if not strict_isolation_possible():
-        return "same-origin-http"       # cannot isolate without HTTPS
-    return "opaque"
+    """Always "same-origin". See _sandbox_attr for why.
+
+    Kept as a function (and reported by /ui-session) so the SPA and the docs
+    have one place to read the answer from if that ever changes.
+    """
+    return "same-origin"
 
 
 def _sandbox_attr() -> str:
-    """The iframe sandbox the SPA must apply to the proxied UI."""
-    tokens = ["allow-scripts", "allow-forms", "allow-popups", "allow-downloads"]
-    if isolation_mode() != "opaque":
-        # The proxied instance gets same-origin access to this app, so it could
-        # read the admin session token. Serve the app over HTTPS to avoid this.
-        tokens.append("allow-same-origin")
-    return " ".join(tokens)
+    """The iframe sandbox the SPA applies to the proxied UI.
+
+    `allow-same-origin` is present because AdGuard Home's UI cannot run without
+    it. Its dashboard HTML reads window.localStorage in an inline script, and
+    main.*.js reads document.cookie; in an opaque origin both throw
+    SecurityError and the React app fails to start. Verified against
+    AdGuard Home v0.107.78.
+
+    That means the sandbox provides NO isolation from this app's origin —
+    allow-scripts plus allow-same-origin is explicitly an escape hatch, not a
+    boundary. A compromised managed server can read this app's session token.
+    The only real remedies are to serve the proxy from a separate hostname or
+    to turn the embedded UI off (UI_PROXY_ENABLED=false); startup says so.
+
+    The remaining tokens still block top-level navigation, plugins and
+    pointer/orientation lock, which costs nothing to keep.
+    """
+    return "allow-scripts allow-forms allow-popups allow-downloads allow-same-origin"
 
 
 @router.api_route("/{server_id}/ui/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)

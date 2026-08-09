@@ -19,48 +19,46 @@ def _open_session(client, headers, server_id):
 # --------------------------------------------------------------------------- #
 # S3 — origin isolation
 # --------------------------------------------------------------------------- #
-def test_sandbox_omits_allow_same_origin_over_https(monkeypatch):
-    """This single token is what keeps a hostile AdGuard box out of localStorage.
-
-    Only achievable over HTTPS: the opaque-origin frame needs a SameSite=None
-    cookie, which browsers reject without Secure.
-    """
-    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
+def test_sandbox_keeps_allow_same_origin():
+    """AdGuard's UI cannot run in an opaque origin — it reads localStorage from
+    an inline script and document.cookie from its bundle, and both throw. An
+    earlier build omitted this flag and the embedded UI simply never loaded."""
     tokens = _sandbox_attr().split()
-    assert "allow-same-origin" not in tokens
+    assert "allow-same-origin" in tokens
     assert "allow-scripts" in tokens
 
 
-def test_sandbox_falls_back_over_plain_http(monkeypatch):
-    """Documented trade-off: over HTTP the cookie could never be sent, so a
-    strict sandbox would just break the feature."""
-    monkeypatch.setattr(settings, "public_base_url", "http://admin.example.com")
-    assert "allow-same-origin" in _sandbox_attr().split()
+def test_sandbox_still_blocks_top_level_navigation():
+    """What the sandbox does buy us, now that isolation is off the table."""
+    tokens = _sandbox_attr().split()
+    assert "allow-top-navigation" not in tokens
+    assert "allow-modals" not in tokens
 
 
-def test_ui_session_advertises_the_sandbox(client, editor_headers, server_row, monkeypatch):
-    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
+def test_ui_session_advertises_the_sandbox(client, editor_headers, server_row):
     body = _open_session(client, editor_headers, server_row.id).json()
-    assert "allow-same-origin" not in body["sandbox"]
+    assert "allow-same-origin" in body["sandbox"]
+    assert body["isolation"] == "same-origin"
     assert body["src"] == f"/api/servers/{server_row.id}/ui/"
 
 
-def test_same_origin_escape_hatch_is_explicit(monkeypatch):
-    monkeypatch.setattr(settings, "ui_proxy_allow_same_origin", True)
-    assert "allow-same-origin" in _sandbox_attr()
+def test_enabling_the_proxy_is_announced_at_startup(caplog, monkeypatch):
+    """The trust decision must be visible, since it cannot be sandboxed away."""
+    from app.main import warn_about_ui_proxy_isolation
+
+    monkeypatch.setattr(settings, "ui_proxy_enabled", True)
+    with caplog.at_level("WARNING", logger="adguard_admin"):
+        warn_about_ui_proxy_isolation()
+    assert any("same-origin" in r.getMessage() for r in caplog.records)
 
 
-def test_same_origin_escape_hatch_is_flagged_as_insecure_config(monkeypatch):
-    from app.config import Settings, config_problems
+def test_no_warning_when_the_proxy_is_disabled(caplog, monkeypatch):
+    from app.main import warn_about_ui_proxy_isolation
 
-    s = Settings(
-        secret_key="x" * 40,
-        fernet_key=settings.fernet_key,
-        admin_password="not-admin",
-        ui_proxy_enabled=True,
-        ui_proxy_allow_same_origin=True,
-    )
-    assert any("UI_PROXY_ALLOW_SAME_ORIGIN" in p for p in config_problems(s))
+    monkeypatch.setattr(settings, "ui_proxy_enabled", False)
+    with caplog.at_level("WARNING", logger="adguard_admin"):
+        warn_about_ui_proxy_isolation()
+    assert not [r for r in caplog.records if "same-origin" in r.getMessage()]
 
 
 def test_shim_cannot_break_out_of_its_script_tag():

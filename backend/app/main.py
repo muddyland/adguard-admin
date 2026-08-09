@@ -84,26 +84,19 @@ def bootstrap_admin() -> None:
 
 
 def warn_about_ui_proxy_isolation() -> None:
-    """Say plainly when the embedded UI cannot be origin-isolated.
+    """Say plainly that the embedded UI is not origin-isolated.
 
-    Over plain HTTP the frame's auth cookie would have to be SameSite=None,
-    which browsers only accept with Secure — so the proxied UI runs same-origin
-    and a compromised managed server could read the admin session token.
+    Sandboxing it into an opaque origin was tried and does not work: AdGuard
+    Home's dashboard reads localStorage and document.cookie, both of which throw
+    in an opaque origin, so its UI fails to start.
     """
     if not settings.ui_proxy_enabled:
         return
-    mode = proxy.isolation_mode()
-    if mode == "opaque":
-        return
-    reason = (
-        "UI_PROXY_ALLOW_SAME_ORIGIN is set"
-        if mode == "same-origin-forced"
-        else f"PUBLIC_BASE_URL is not https ({settings.public_base_url})"
-    )
     logger.warning(
-        "Embedded AdGuard UI is running SAME-ORIGIN because %s. A compromised "
-        "managed server could read this app's session token. Serve the admin app "
-        "over HTTPS for full isolation, or set UI_PROXY_ENABLED=false.", reason,
+        "Embedded AdGuard UI proxy is ENABLED. AdGuard's own UI requires "
+        "localStorage and document.cookie, so the frame must run same-origin: a "
+        "compromised managed server could read this app's session token. Set "
+        "UI_PROXY_ENABLED=false if you do not trust every managed server."
     )
 
 

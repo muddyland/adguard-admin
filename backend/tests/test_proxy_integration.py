@@ -240,76 +240,28 @@ def test_unreachable_upstream_reports_502(client, editor_headers, session):
 
 
 # --------------------------------------------------------------------------- #
-# Sandbox and cookie must agree, or the frame cannot authenticate at all.
-# An opaque-origin frame's requests are cross-site, so the cookie has to be
-# SameSite=None, which browsers only honour with Secure (HTTPS).
+# Sandbox / cookie coherence. AdGuard's UI needs same-origin, so the cookie is
+# Lax and the frame keeps allow-same-origin. These lock in that pairing.
 # --------------------------------------------------------------------------- #
-def _https(monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
-
-
-def _http(monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "public_base_url", "http://admin.example.com")
-
-
-def test_https_gets_opaque_isolation_and_a_samesite_none_cookie(
-    client, editor_headers, proxied_server, monkeypatch
-):
-    _https(monkeypatch)
+def test_frame_is_same_origin_with_a_lax_cookie(client, editor_headers, proxied_server):
     resp = client.post(f"/api/servers/{proxied_server.id}/ui-session", headers=editor_headers)
     body = resp.json()
     raw = resp.headers["set-cookie"].lower()
 
-    assert body["isolation"] == "opaque"
-    assert "allow-same-origin" not in body["sandbox"]
-    assert "samesite=none" in raw and "secure" in raw, raw
-
-
-def test_http_falls_back_so_the_cookie_is_actually_sent(
-    client, editor_headers, proxied_server, monkeypatch
-):
-    """Over HTTP a SameSite=None cookie is rejected by browsers, so strict
-    isolation would silently break the proxy. Fall back rather than ship a
-    frame that can never authenticate."""
-    _http(monkeypatch)
-    resp = client.post(f"/api/servers/{proxied_server.id}/ui-session", headers=editor_headers)
-    body = resp.json()
-    raw = resp.headers["set-cookie"].lower()
-
-    assert body["isolation"] == "same-origin-http"
+    assert body["isolation"] == "same-origin"
     assert "allow-same-origin" in body["sandbox"]
     assert "samesite=lax" in raw, raw
-    assert "samesite=none" not in raw
+    assert "httponly" in raw
 
 
-def test_sandbox_and_cookie_never_disagree(client, editor_headers, proxied_server, monkeypatch):
-    """The invariant behind the outage: opaque frame <-> SameSite=None."""
-    for setup in (_https, _http):
-        setup(monkeypatch)
-        resp = client.post(
-            f"/api/servers/{proxied_server.id}/ui-session", headers=editor_headers
-        )
-        opaque = "allow-same-origin" not in resp.json()["sandbox"]
-        samesite_none = "samesite=none" in resp.headers["set-cookie"].lower()
-        assert opaque == samesite_none, (
-            f"sandbox/cookie mismatch: opaque={opaque} samesite_none={samesite_none}"
-        )
-
-
-def test_forced_same_origin_override_is_reported(
-    client, editor_headers, proxied_server, monkeypatch
-):
+def test_cookie_is_secure_only_over_https(client, editor_headers, proxied_server, monkeypatch):
     from app.config import settings
 
-    _https(monkeypatch)
-    monkeypatch.setattr(settings, "ui_proxy_allow_same_origin", True)
-    body = client.post(
+    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
+    raw = client.post(
         f"/api/servers/{proxied_server.id}/ui-session", headers=editor_headers
-    ).json()
-    assert body["isolation"] == "same-origin-forced"
-    assert "allow-same-origin" in body["sandbox"]
+    ).headers["set-cookie"].lower()
+    assert "secure" in raw
 
 
 def test_cors_allows_our_own_host_not_public_base_url(ui_client, proxied_server, monkeypatch):

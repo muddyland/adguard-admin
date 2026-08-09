@@ -28,12 +28,12 @@ separate, higher-privilege act.
 ### Embedded UI
 
 **Open UI (embedded)** proxies the server's own AdGuard interface into a modal.
-Those bytes come from the remote instance, not from this app, so the iframe is
-sandboxed. Over HTTPS it is confined to an opaque origin and a compromised
-managed server cannot read your admin session; over plain HTTP it has to run
-same-origin, and the app logs a warning saying so. See
-[the isolation table](configuration.md#embedded-adguard-ui-proxy) for why, and
-`UI_PROXY_ENABLED=false` to turn the feature off entirely.
+Those bytes come from the remote instance but run in this app's origin, because
+AdGuard's UI needs `localStorage` and `document.cookie` and so cannot be
+sandboxed into an opaque origin. Embedding a server therefore means trusting it
+with your admin session — see
+[the trust note](configuration.md#embedded-adguard-ui-proxy). Use
+*Open UI in new tab*, or `UI_PROXY_ENABLED=false`, if you would rather not.
 
 The UI session is authorized by a short-lived cookie whose user is re-checked on
 every request, so disabling or demoting an account revokes embedded access

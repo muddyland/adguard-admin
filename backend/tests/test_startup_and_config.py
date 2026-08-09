@@ -20,7 +20,6 @@ def _settings(**overrides) -> Settings:
         admin_password="not-the-default",
         cors_origins="https://admin.example.com",
         oidc_default_role="viewer",
-        ui_proxy_allow_same_origin=False,
     )
     base.update(overrides)
     return Settings(**base)

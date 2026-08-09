@@ -74,13 +74,12 @@ class Settings(BaseSettings):
     login_lockout_seconds: int = 300
 
     # --- Embedded AdGuard UI proxy -----------------------------------------
-    # The proxy serves a remote AdGuard instance's own HTML/JS through our
-    # origin. The iframe is sandboxed WITHOUT allow-same-origin so that content
-    # lands in an opaque origin and cannot read this app's localStorage. Set
-    # ui_proxy_allow_same_origin=true only if your AdGuard build refuses to run
-    # sandboxed — it re-exposes the admin session to the proxied instance.
+    # Serves a remote AdGuard instance's own HTML/JS through our origin so it
+    # can be embedded. AdGuard's UI requires localStorage and document.cookie,
+    # so the frame must run same-origin and the proxied instance is therefore
+    # trusted with this app's origin. Turn this off if you do not trust every
+    # managed server.
     ui_proxy_enabled: bool = True
-    ui_proxy_allow_same_origin: bool = False
     proxy_token_ttl_minutes: int = 60
 
     # OIDC / Authentik (all optional — OIDC is disabled unless issuer is set)
@@ -173,13 +172,6 @@ def config_problems(s: Settings) -> list[str]:
         problems.append(
             "OIDC_ENABLED is true but OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET "
             "are not all set."
-        )
-
-    if s.ui_proxy_enabled and s.ui_proxy_allow_same_origin:
-        problems.append(
-            "UI_PROXY_ALLOW_SAME_ORIGIN grants every proxied AdGuard instance same-origin "
-            "access to this app (it can read the admin session token). Leave it off unless "
-            "you fully trust every managed server."
         )
 
     return problems
