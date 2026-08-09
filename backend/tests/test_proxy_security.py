@@ -19,14 +19,27 @@ def _open_session(client, headers, server_id):
 # --------------------------------------------------------------------------- #
 # S3 — origin isolation
 # --------------------------------------------------------------------------- #
-def test_sandbox_omits_allow_same_origin_by_default():
-    """This single token is what keeps a hostile AdGuard box out of localStorage."""
+def test_sandbox_omits_allow_same_origin_over_https(monkeypatch):
+    """This single token is what keeps a hostile AdGuard box out of localStorage.
+
+    Only achievable over HTTPS: the opaque-origin frame needs a SameSite=None
+    cookie, which browsers reject without Secure.
+    """
+    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
     tokens = _sandbox_attr().split()
     assert "allow-same-origin" not in tokens
     assert "allow-scripts" in tokens
 
 
-def test_ui_session_advertises_the_sandbox(client, editor_headers, server_row):
+def test_sandbox_falls_back_over_plain_http(monkeypatch):
+    """Documented trade-off: over HTTP the cookie could never be sent, so a
+    strict sandbox would just break the feature."""
+    monkeypatch.setattr(settings, "public_base_url", "http://admin.example.com")
+    assert "allow-same-origin" in _sandbox_attr().split()
+
+
+def test_ui_session_advertises_the_sandbox(client, editor_headers, server_row, monkeypatch):
+    monkeypatch.setattr(settings, "public_base_url", "https://admin.example.com")
     body = _open_session(client, editor_headers, server_row.id).json()
     assert "allow-same-origin" not in body["sandbox"]
     assert body["src"] == f"/api/servers/{server_row.id}/ui/"

@@ -83,9 +83,34 @@ def bootstrap_admin() -> None:
             )
 
 
+def warn_about_ui_proxy_isolation() -> None:
+    """Say plainly when the embedded UI cannot be origin-isolated.
+
+    Over plain HTTP the frame's auth cookie would have to be SameSite=None,
+    which browsers only accept with Secure — so the proxied UI runs same-origin
+    and a compromised managed server could read the admin session token.
+    """
+    if not settings.ui_proxy_enabled:
+        return
+    mode = proxy.isolation_mode()
+    if mode == "opaque":
+        return
+    reason = (
+        "UI_PROXY_ALLOW_SAME_ORIGIN is set"
+        if mode == "same-origin-forced"
+        else f"PUBLIC_BASE_URL is not https ({settings.public_base_url})"
+    )
+    logger.warning(
+        "Embedded AdGuard UI is running SAME-ORIGIN because %s. A compromised "
+        "managed server could read this app's session token. Serve the admin app "
+        "over HTTPS for full isolation, or set UI_PROXY_ENABLED=false.", reason,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_configuration()
+    warn_about_ui_proxy_isolation()
     init_db()
     bootstrap_admin()
     sync_manager.start()

@@ -71,9 +71,22 @@ fleet of slow or unreachable servers cannot starve the API of connections.
 ## Embedded AdGuard UI proxy
 
 The proxy renders a managed server's own UI inside the admin SPA. Those bytes are
-written by the remote AdGuard instance, so the iframe is sandboxed **without**
-`allow-same-origin`: the proxied app lands in an opaque origin and cannot read
-this app's session token.
+written by the remote AdGuard instance, so we would rather they could not touch
+this app's origin.
+
+How well that works depends on your scheme, because the frame's auth cookie has
+to match the sandbox:
+
+| `PUBLIC_BASE_URL` | Isolation | What happens |
+|---|---|---|
+| `https://…` | `opaque` | Sandboxed **without** `allow-same-origin`. The proxied app gets an opaque origin and cannot read this app's session token. Its cookie is `SameSite=None; Secure`. |
+| `http://…` | `same-origin-http` | Falls back to `allow-same-origin`, with a warning logged at startup. A `SameSite=None` cookie is rejected by browsers without `Secure`, so a strict sandbox could never authenticate — the embedded UI would simply not load. |
+
+**Serve the admin app over HTTPS** if you want the embedded UI isolated. If you
+can't, and you don't fully trust every managed server, set `UI_PROXY_ENABLED=false`
+and use *Open UI in new tab* instead.
+
+`/api/servers/{id}/ui-session` reports the active mode in its `isolation` field.
 
 | Variable | Default | Notes |
 |---|---|---|

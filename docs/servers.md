@@ -29,11 +29,15 @@ separate, higher-privilege act.
 
 **Open UI (embedded)** proxies the server's own AdGuard interface into a modal.
 Those bytes come from the remote instance, not from this app, so the iframe is
-sandboxed into an opaque origin — a compromised managed server cannot read your
-admin session. The UI session is authorized by a short-lived cookie whose user is
-re-checked on every request, so disabling or demoting an account revokes embedded
-access immediately. See [`UI_PROXY_ENABLED`](configuration.md#embedded-adguard-ui-proxy)
-to turn the feature off entirely.
+sandboxed. Over HTTPS it is confined to an opaque origin and a compromised
+managed server cannot read your admin session; over plain HTTP it has to run
+same-origin, and the app logs a warning saying so. See
+[the isolation table](configuration.md#embedded-adguard-ui-proxy) for why, and
+`UI_PROXY_ENABLED=false` to turn the feature off entirely.
+
+The UI session is authorized by a short-lived cookie whose user is re-checked on
+every request, so disabling or demoting an account revokes embedded access
+immediately.
 
 > Starting from scratch with no AdGuard Home installed yet? Use
 > [Provisioning](provisioning.md) instead — it installs and registers the server for you.

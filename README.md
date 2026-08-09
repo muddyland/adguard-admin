@@ -146,8 +146,9 @@ local accounts, with optional group→role mapping. See
 - Provisioning input that reaches the root-run `install.sh` is validated and
   shell-quoted; the endpoints serving the admin password and TLS private key are
   single-fetch.
-- The embedded AdGuard UI is sandboxed into an opaque origin, so a compromised
-  managed server cannot read the admin session.
+- The embedded AdGuard UI is sandboxed. Served over HTTPS it is confined to an
+  opaque origin, so a compromised managed server cannot read the admin session;
+  over plain HTTP it falls back to same-origin and says so at startup.
 - Every response carries a strict CSP plus `X-Frame-Options`, `X-Content-Type-Options`,
   `Referrer-Policy` and `Cross-Origin-Opener-Policy` (HSTS too, over HTTPS).
 - The application process runs as uid 10001 with no effective capabilities, a

@@ -65,18 +65,23 @@ _STRIP_RESP = {
 # Only HTML needs rewriting, and AdGuard's HTML is a small shell.
 _MAX_REWRITE_BYTES = 8 * 1024 * 1024
 
+# Uploads above this are streamed (chunked) rather than buffered.
+_MAX_BUFFERED_UPLOAD = 32 * 1024 * 1024
+
 # Runtime shim: rewrite absolute URLs (/control, /assets, …) to the proxy prefix
 # so the AdGuard SPA's fetch/XHR calls resolve through us. P is injected per server.
 # credentials:"include" is required because the sandboxed frame is cross-origin
 # to us and would otherwise omit the path-scoped auth cookie.
 _SHIM_BODY = """
+var SELF=location.protocol+"//"+location.host;
 function fix(u){try{
   if(typeof u!=="string")return u;
   if(u.indexOf(P+"/")===0||u===P)return u;
   if(u.indexOf("http")===0){var a=document.createElement("a");a.href=u;
-    if(a.origin===B&&a.pathname.indexOf(P+"/")!==0)return B+P+a.pathname+a.search+a.hash;
+    if(a.protocol+"//"+a.host===SELF&&a.pathname.indexOf(P+"/")!==0)
+      return P+a.pathname+a.search+a.hash;
     return u;}
-  if(u.charAt(0)==="/"&&u.charAt(1)!=="/")return B+P+u;
+  if(u.charAt(0)==="/"&&u.charAt(1)!=="/")return P+u;
   return u;
 }catch(e){return u;}}
 var of=window.fetch;
@@ -99,16 +104,11 @@ def _to_js_str(s: str) -> str:
 
 
 def _shim(prefix: str) -> str:
-    base = settings.public_base_url.rstrip("/")
-    return (
-        "<script>(function(){var P="
-        + _to_js_str(prefix)
-        + ";var B="
-        + _to_js_str(base)
-        + ";"
-        + _SHIM_BODY
-        + "})();</script>"
-    )
+    # Paths stay relative to the document URL, which is correct in a sandboxed
+    # frame too (an opaque *origin* does not change the document's URL). An
+    # earlier version pinned them to PUBLIC_BASE_URL, which broke the proxy for
+    # anyone reaching the app on a different hostname than that setting.
+    return "<script>(function(){var P=" + _to_js_str(prefix) + ";" + _SHIM_BODY + "})();</script>"
 
 
 def _rewrite_html(html: str, prefix: str) -> str:
@@ -160,8 +160,12 @@ def _cors_headers(request: Request) -> dict[str, str]:
     origin = request.headers.get("origin")
     if not origin:
         return {}
-    allowed = {"null", settings.public_base_url.rstrip("/")}
-    if origin not in allowed:
+    # "null" is the sandboxed frame. Otherwise accept only our own origin,
+    # determined from the request's Host header rather than PUBLIC_BASE_URL —
+    # the app is frequently reached on a hostname that setting doesn't match.
+    host = request.headers.get("host", "")
+    same_origin = {f"http://{host}", f"https://{host}"}
+    if origin != "null" and origin not in same_origin:
         return {}
     return {
         "access-control-allow-origin": origin,
@@ -204,16 +208,17 @@ def ui_session(server_id: int, user: RequireEditor, session: SessionDep, respons
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     prefix = f"/api/servers/{server_id}/ui"
+    opaque = isolation_mode() == "opaque"
     response.set_cookie(
         key=f"aghproxy_{server_id}",
         value=create_proxy_token(server_id, user.id),
         path=prefix,
         httponly=True,
-        # The sandboxed iframe is an opaque origin, so its sub-requests are
-        # cross-site as far as the cookie is concerned; Lax would drop them.
-        # Confidentiality still holds: HttpOnly keeps it out of reach of script,
-        # and the value is a signed, server-scoped, short-lived token.
-        samesite="none" if settings.secure_cookies else "lax",
+        # Must match the sandbox: an opaque-origin frame's sub-requests are
+        # cross-site, so Lax would drop the cookie and nothing would load.
+        # Confidentiality still holds either way — HttpOnly keeps it away from
+        # script, and the value is a signed, server-scoped, short-lived token.
+        samesite="none" if opaque else "lax",
         secure=settings.secure_cookies,
         max_age=settings.proxy_token_ttl_minutes * 60,
     )
@@ -221,16 +226,38 @@ def ui_session(server_id: int, user: RequireEditor, session: SessionDep, respons
         "ok": True,
         "src": prefix + "/",
         "sandbox": _sandbox_attr(),
+        "isolation": isolation_mode(),
     }
+
+
+def strict_isolation_possible() -> bool:
+    """Whether the proxied UI can be confined to an opaque origin.
+
+    A sandboxed frame without allow-same-origin has an opaque origin, which
+    makes all of its requests cross-site for cookie purposes. The UI session
+    cookie must therefore be SameSite=None, and browsers only accept that
+    together with Secure — i.e. the admin app has to be served over HTTPS.
+
+    Over plain HTTP the cookie would simply never be sent and the embedded UI
+    would fail to authenticate, so we fall back to a same-origin frame.
+    """
+    return settings.secure_cookies
+
+
+def isolation_mode() -> str:
+    if settings.ui_proxy_allow_same_origin:
+        return "same-origin-forced"     # explicit operator override
+    if not strict_isolation_possible():
+        return "same-origin-http"       # cannot isolate without HTTPS
+    return "opaque"
 
 
 def _sandbox_attr() -> str:
     """The iframe sandbox the SPA must apply to the proxied UI."""
     tokens = ["allow-scripts", "allow-forms", "allow-popups", "allow-downloads"]
-    if settings.ui_proxy_allow_same_origin:
-        # Escape hatch for AdGuard builds that hard-require localStorage. This
-        # hands the proxied instance same-origin access to this app; startup
-        # refuses to run with it set unless ALLOW_INSECURE_CONFIG is on.
+    if isolation_mode() != "opaque":
+        # The proxied instance gets same-origin access to this app, so it could
+        # read the admin session token. Serve the app over HTTPS to avoid this.
         tokens.append("allow-same-origin")
     return " ".join(tokens)
 
@@ -261,11 +288,25 @@ async def proxy_ui(server_id: int, path: str, request: Request, session: Session
         follow_redirects=False,
         timeout=httpx.Timeout(30.0, read=300.0),
     )
+    # Body handling. Passing an async iterator to httpx makes it use
+    # Transfer-Encoding: chunked for *every* request, including bodyless GETs —
+    # which is both unnecessary and rejected by some servers. Forward a
+    # normal, length-delimited body whenever the length is known (which is
+    # every request the AdGuard UI actually makes), and only fall back to
+    # streaming for genuinely unbounded or oversized uploads.
+    declared = request.headers.get("content-length")
+    chunked_upload = "chunked" in request.headers.get("transfer-encoding", "").lower()
+    content: object | None
+    if chunked_upload or (declared and int(declared) > _MAX_BUFFERED_UPLOAD):
+        content = request.stream()
+    elif declared and int(declared) > 0:
+        content = await request.body()
+    else:
+        content = None
+
     try:
-        # Stream the request body upstream instead of materialising it: the
-        # AdGuard UI uploads filter lists and config backups through here.
         upstream_req = client.build_request(
-            request.method, target, headers=fwd, content=request.stream()
+            request.method, target, headers=fwd, content=content
         )
         up = await client.send(upstream_req, stream=True)
     except httpx.HTTPError as exc:
