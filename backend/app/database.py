@@ -14,6 +14,13 @@ engine = create_engine(
     connect_args=connect_args,
     # Recycle dead connections rather than surfacing them as request errors.
     pool_pre_ping=True,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    # Fail fast if the pool is ever exhausted. The default is 30s, which turns a
+    # connection shortage into a UI that appears to hang; an error surfaces the
+    # real problem instead. Reconciliation no longer holds connections across
+    # network I/O, so hitting this should mean genuine overload.
+    pool_timeout=settings.db_pool_timeout_seconds,
 )
 
 

@@ -10,6 +10,9 @@ production are flagged.
 |---|---|---|
 | `APP_NAME` | `AdGuard Admin` | Display name. |
 | `DATABASE_URL` | `sqlite:///./adguard_admin.db` | The Docker image uses `sqlite:////data/adguard_admin.db` on a persistent volume. |
+| `DB_POOL_SIZE` | `10` | Pooled database connections. |
+| `DB_MAX_OVERFLOW` | `20` | Extra connections allowed above the pool size under load. |
+| `DB_POOL_TIMEOUT_SECONDS` | `10` | How long a request waits for a free connection before erroring. Deliberately short: a long wait reads as a hung UI.
 
 ## Security — required
 
@@ -55,6 +58,15 @@ reverse proxy.
 | `SYNC_MAX_CONCURRENCY` | `8` | Servers reconciled in parallel. Raise it if a cycle can't finish within `SYNC_INTERVAL_SECONDS` — each unreachable server costs a full timeout. |
 | `ADGUARD_TIMEOUT_SECONDS` | `10` | Per-request timeout when talking to an AdGuard instance. |
 | `DEFAULT_PRUNE` | `false` | Default value of [prune](concepts.md#prune) for new servers. Per-server overridable. |
+
+Reconciliation is serialised **per server**, not globally: a manual sync never
+waits for the rest of the fleet. If a server is already being reconciled, the
+second request reports that and returns immediately rather than queueing. If a
+periodic cycle overruns `SYNC_INTERVAL_SECONDS`, the next tick is skipped (and
+logged) instead of piling up.
+
+Database connections are never held while talking to an AdGuard instance, so a
+fleet of slow or unreachable servers cannot starve the API of connections.
 
 ## Embedded AdGuard UI proxy
 

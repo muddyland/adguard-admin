@@ -219,30 +219,114 @@ async def test_concurrency_limit_is_respected(session, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# T3 — cycles must not overlap
+# T3 — the same server is never reconciled twice at once, but a slow fleet must
+# not stall unrelated work. A single global lock satisfied the first and broke
+# the second: "Sync now" queued behind every timing-out server in the fleet.
 # --------------------------------------------------------------------------- #
 @pytest.mark.anyio
-async def test_manual_run_does_not_race_the_loop(session, monkeypatch):
+async def test_same_server_is_never_reconciled_concurrently(session, monkeypatch):
+    server = _add_server(session, "agh-1")
+
+    in_flight = 0
+    peak = 0
+
+    class TrackingClient(FakeClient):
+        async def status(self):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.05)
+                return {"version": "0.107.0", "running": True}
+            finally:
+                in_flight -= 1
+
+    monkeypatch.setattr(sync_mod, "AdGuardClient", lambda *a, **k: TrackingClient())
+
+    await asyncio.gather(*(
+        sync_mod._reconcile_one(server.id, dry_run=False) for _ in range(5)
+    ))
+    assert peak == 1, "the same server was reconciled concurrently"
+
+
+@pytest.mark.anyio
+async def test_busy_server_reports_instead_of_queueing(session, monkeypatch):
+    server = _add_server(session, "agh-1")
+
+    class SlowClient(FakeClient):
+        async def status(self):
+            await asyncio.sleep(0.3)
+            return {"version": "0.107.0", "running": True}
+
+    monkeypatch.setattr(sync_mod, "AdGuardClient", lambda *a, **k: SlowClient())
+
+    first = asyncio.create_task(sync_mod._reconcile_one(server.id, dry_run=False))
+    await asyncio.sleep(0.05)
+
+    began = asyncio.get_running_loop().time()
+    second = await sync_mod._reconcile_one(server.id, dry_run=False)
+    waited = asyncio.get_running_loop().time() - began
+
+    assert waited < 0.1, f"second pass queued for {waited:.2f}s instead of reporting"
+    assert "already in progress" in (second.error or "")
+    await first
+
+
+@pytest.mark.anyio
+async def test_manual_sync_does_not_queue_behind_a_stalled_fleet(session, monkeypatch):
+    """The reported UI hang: pressing Sync now waited out every timing-out
+    server in the fleet before responding."""
+    slow_ids = [_add_server(session, f"slow-{i}", url=f"http://10.0.9.{i}:3000").id
+                for i in range(6)]
+    fast = _add_server(session, "fast", url="http://10.0.8.1:3000")
+
+    class Client(FakeClient):
+        def __init__(self, url):
+            super().__init__()
+            self._slow = "10.0.9." in url
+
+        async def status(self):
+            if self._slow:
+                await asyncio.sleep(5)  # stands in for a connection timeout
+            return {"version": "0.107.0", "running": True}
+
+    monkeypatch.setattr(sync_mod, "AdGuardClient", lambda url, *a, **k: Client(url))
+    monkeypatch.setattr(settings, "sync_max_concurrency", 8)
+
+    manager = SyncManager()
+    fleet = asyncio.create_task(manager.run_once(force=True))
+    await asyncio.sleep(0.2)  # let the stalled servers get going
+
+    began = asyncio.get_running_loop().time()
+    results = await manager.run_once(only_server_id=fast.id, force=True)
+    waited = asyncio.get_running_loop().time() - began
+
+    assert waited < 1.0, f"manual single-server sync blocked for {waited:.2f}s"
+    assert len(results) == 1 and results[0].server_id == fast.id
+
+    await fleet
+    assert len(slow_ids) == 6
+
+
+@pytest.mark.anyio
+async def test_periodic_cycle_skips_when_the_previous_one_overruns(session, monkeypatch):
     _add_server(session, "agh-1")
 
-    concurrent_cycles = 0
-    peak_cycles = 0
+    starts = 0
 
     async def slow_reconcile_all(**kwargs):
-        nonlocal concurrent_cycles, peak_cycles
-        concurrent_cycles += 1
-        peak_cycles = max(peak_cycles, concurrent_cycles)
-        try:
-            await asyncio.sleep(0.05)
-            return []
-        finally:
-            concurrent_cycles -= 1
+        nonlocal starts
+        starts += 1
+        await asyncio.sleep(0.3)
+        return []
 
     monkeypatch.setattr(sync_mod, "reconcile_all", slow_reconcile_all)
     manager = SyncManager()
 
-    await asyncio.gather(*(manager.run_once(force=True) for _ in range(4)))
-    assert peak_cycles == 1, "reconcile cycles overlapped"
+    # Two ticks land while the first cycle is still running; they must be
+    # dropped rather than queued up behind it.
+    await asyncio.gather(*(manager._run_periodic_cycle() for _ in range(3)))
+    assert starts == 1, f"overlapping ticks queued instead of being skipped ({starts})"
 
 
 # --------------------------------------------------------------------------- #
@@ -356,3 +440,68 @@ async def test_disabled_servers_are_skipped(session, monkeypatch):
     _add_server(session, "off", enabled=False)
     monkeypatch.setattr(sync_mod, "AdGuardClient", lambda *a, **k: FakeClient())
     assert await reconcile_all(force=True) == []
+
+
+# --------------------------------------------------------------------------- #
+# Database connections must not be held across network I/O. Holding one for the
+# duration of every server's round-trips drained the pool once a few servers
+# were slow, and API requests then blocked waiting for a free connection.
+# --------------------------------------------------------------------------- #
+@pytest.mark.anyio
+async def test_no_db_connection_is_held_during_network_io(session, monkeypatch):
+    for i in range(6):
+        _add_server(session, f"agh-{i}", url=f"http://10.0.7.{i}:3000")
+    _add_record(session, "nas.home.lan")
+
+    peak_checked_out = 0
+
+    class ObservingClient(FakeClient):
+        async def status(self):
+            nonlocal peak_checked_out
+            # Sampled while every server is mid-request.
+            peak_checked_out = max(peak_checked_out, engine.pool.checkedout())
+            await asyncio.sleep(0.1)
+            return {"version": "0.107.0", "running": True}
+
+    monkeypatch.setattr(sync_mod, "AdGuardClient", lambda *a, **k: ObservingClient())
+    monkeypatch.setattr(settings, "sync_max_concurrency", 6)
+
+    session.commit()  # release this test's own connection
+    results = await reconcile_all(force=True)
+
+    assert len(results) == 6
+    assert peak_checked_out == 0, (
+        f"{peak_checked_out} pooled connection(s) held during network I/O"
+    )
+
+
+@pytest.mark.anyio
+async def test_plan_is_snapshotted_before_the_network_phase(session, monkeypatch):
+    """apply_plan must not touch the database, so a mid-flight edit can't half-apply."""
+    server = _add_server(session, "agh-1", manage_upstreams=True, manage_filtering=True)
+    _add_record(session, "nas.home.lan")
+
+    plan = sync_mod.build_plan(session, session.get(Server, server.id))
+    assert plan.rewrites
+    assert set(plan.upstream_lists) == {
+        "upstream_dns", "bootstrap_dns", "fallback_dns", "local_ptr_upstreams"
+    }
+    assert set(plan.filters) == {"filters", "whitelist_filters"}
+
+    fake = FakeClient()
+    monkeypatch.setattr(sync_mod, "AdGuardClient", lambda *a, **k: fake)
+
+    checked_out_during = []
+    orig = fake.list_rewrites
+
+    async def watching_list():
+        checked_out_during.append(engine.pool.checkedout())
+        return await orig()
+
+    fake.list_rewrites = watching_list
+    session.commit()
+
+    result, updates = await sync_mod.apply_plan(plan)
+    assert result.status == SyncStatus.online
+    assert updates.status == SyncStatus.online
+    assert checked_out_during == [0]

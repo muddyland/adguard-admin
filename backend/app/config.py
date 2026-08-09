@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     app_name: str = "AdGuard Admin"
     database_url: str = "sqlite:///./adguard_admin.db"
 
+    # Connection pool. FastAPI serves sync endpoints from a thread pool, so
+    # concurrent requests each need a connection.
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout_seconds: int = 10
+
     # Security — MUST be overridden in production via .env
     secret_key: str = "change-me-please-generate-a-long-random-string"
     # Fernet key used to encrypt AdGuard server passwords at rest.

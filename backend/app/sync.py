@@ -41,6 +41,53 @@ from .security import decrypt_secret
 logger = logging.getLogger("adguard_admin.sync")
 
 
+@dataclass(frozen=True)
+class FilterSpec:
+    """The parts of a FilterList the apply phase needs, detached from the ORM."""
+    name: str
+    url: str
+    enabled: bool
+
+
+@dataclass
+class ServerPlan:
+    """Everything reconciliation needs, read in one short transaction.
+
+    The apply phase does only network I/O against this snapshot. Previously it
+    queried the database *between* HTTP calls, which meant a pooled SQLite
+    connection stayed checked out for the whole of a server's round-trips — with
+    several slow servers in flight the pool ran dry and API requests stalled.
+    """
+    server_id: int
+    name: str
+    url: str
+    username: str | None
+    password_enc: str | None
+    tls_cert: str | None
+    prune: bool
+    manage_upstreams: bool
+    manage_filtering: bool
+    rewrites: set[Rewrite] = field(default_factory=set)
+    upstream_lists: dict[str, list[str]] = field(default_factory=dict)
+    filters: dict[str, list[FilterSpec]] = field(default_factory=dict)
+    blocked_services: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ServerUpdates:
+    """Columns the apply phase decided to write back."""
+    status: SyncStatus = SyncStatus.unknown
+    in_sync: bool = False
+    version: str | None = None
+    latest_version: str | None = None
+    update_available: bool = False
+    last_error: str | None = None
+    last_seen: datetime | None = None
+    last_synced: datetime | None = None
+    cooldown_until: datetime | None = None
+    clear_cooldown: bool = False
+
+
 @dataclass
 class ServerSyncResult:
     server_id: int
@@ -137,15 +184,83 @@ _FILTER_KINDS = [
 ]
 
 
-async def _reconcile_filtering(session: Session, server: Server, client: AdGuardClient, *, dry_run: bool) -> bool:
+def build_plan(session: Session, server: Server) -> ServerPlan:
+    """Snapshot everything the apply phase needs, in one short read.
+
+    Deliberately eager: the alternative is querying between HTTP calls, which
+    keeps a pooled connection checked out for the whole exchange.
+    """
+    plan = ServerPlan(
+        server_id=server.id,
+        name=server.name,
+        url=server.url,
+        username=server.username,
+        password_enc=server.password_enc,
+        tls_cert=server.tls_cert,
+        prune=server.prune,
+        manage_upstreams=server.manage_upstreams,
+        manage_filtering=server.manage_filtering,
+        rewrites=desired_rewrites_for_server(session, server),
+    )
+
+    if server.manage_upstreams:
+        plan.upstream_lists = {
+            "upstream_dns": desired_upstreams_for_server(session, server),
+            "bootstrap_dns": _addresses_of_kind(session, server, DnsServerKind.bootstrap),
+            "fallback_dns": _addresses_of_kind(session, server, DnsServerKind.fallback),
+            "local_ptr_upstreams": _addresses_of_kind(session, server, DnsServerKind.private),
+        }
+
+    if server.manage_filtering:
+        plan.filters = {
+            key: [
+                FilterSpec(name=f.name, url=f.url, enabled=f.enabled)
+                for f in _filters_for_server(session, server, kind)
+            ]
+            for kind, _whitelist, key in _FILTER_KINDS
+        }
+        plan.blocked_services = desired_blocked_services_for_server(session, server)
+
+    return plan
+
+
+def apply_updates(session: Session, server_id: int, updates: ServerUpdates) -> None:
+    """Write the apply phase's decisions back, in its own short transaction."""
+    server = session.get(Server, server_id)
+    if server is None:  # deleted while we were talking to it
+        return
+    server.status = updates.status
+    server.in_sync = updates.in_sync
+    server.last_error = updates.last_error
+    if updates.version is not None:
+        server.version = updates.version
+    if updates.latest_version is not None or updates.status == SyncStatus.online:
+        server.latest_version = updates.latest_version
+        server.update_available = updates.update_available
+    if updates.last_seen is not None:
+        server.last_seen = updates.last_seen
+    if updates.last_synced is not None:
+        server.last_synced = updates.last_synced
+    if updates.clear_cooldown:
+        server.cooldown_until = None
+    elif updates.cooldown_until is not None:
+        server.cooldown_until = updates.cooldown_until
+    session.add(server)
+    session.commit()
+
+
+async def _reconcile_filtering(plan: ServerPlan, client: AdGuardClient, *, dry_run: bool) -> bool:
     """Apply blocklists, allowlists and blocked services. Returns True if anything
-    changed (or would change, in dry-run). Removals only happen when prune is on."""
+    changed (or would change, in dry-run). Removals only happen when prune is on.
+
+    Reads nothing from the database — everything comes from `plan`.
+    """
     changed = False
     status = await client.filtering_status()
 
     desired_block_enabled = 0
     for kind, whitelist, key in _FILTER_KINDS:
-        desired = _filters_for_server(session, server, kind)
+        desired = plan.filters.get(key, [])
         if kind == FilterKind.blocklist:
             desired_block_enabled = sum(1 for f in desired if f.enabled)
         current = {(it.get("url") or "").strip(): it for it in (status.get(key) or []) if it.get("url")}
@@ -165,7 +280,7 @@ async def _reconcile_filtering(session: Session, server: Server, client: AdGuard
                 changed = True
                 if not dry_run:
                     await client.filtering_set_url(url, {"enabled": f.enabled, "name": f.name, "url": url}, whitelist)
-        if server.prune:
+        if plan.prune:
             for url in current:
                 if url and url not in desired_urls:
                     changed = True
@@ -180,73 +295,77 @@ async def _reconcile_filtering(session: Session, server: Server, client: AdGuard
 
     # Blocked services. Only act when we have a managed set, so we never wipe a
     # server's services just because none are defined here (mirrors upstreams).
-    desired_ids = desired_blocked_services_for_server(session, server)
+    desired_ids = plan.blocked_services
     if desired_ids:
         try:
             cur = await client.blocked_services_get()
             cur_ids = set(cur.get("ids") or [])
-            target = set(desired_ids) if server.prune else (cur_ids | set(desired_ids))
+            target = set(desired_ids) if plan.prune else (cur_ids | set(desired_ids))
             if target != cur_ids:
                 changed = True
                 if not dry_run:
                     await client.blocked_services_update(sorted(target), cur.get("schedule"))
         except AdGuardError as exc:
-            logger.debug("blocked services not reconciled for %s: %s", server.name, exc)
+            logger.debug("blocked services not reconciled for %s: %s", plan.name, exc)
 
     return changed
 
 
-async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
-    result = ServerSyncResult(server_id=server.id, server_name=server.name, status=SyncStatus.unknown)
-    desired = desired_rewrites_for_server(session, server)
+async def apply_plan(plan: ServerPlan, *, dry_run: bool = False) -> tuple[ServerSyncResult, ServerUpdates]:
+    """Talk to one AdGuard instance. Performs no database access at all.
+
+    Everything it needs is in `plan`; everything it decides comes back in
+    ServerUpdates for the caller to persist in a separate short transaction.
+    """
+    result = ServerSyncResult(
+        server_id=plan.server_id, server_name=plan.name, status=SyncStatus.unknown
+    )
+    updates = ServerUpdates()
 
     # Building the client can itself fail — decrypt_secret raises on a malformed
     # FERNET_KEY and verify_for raises ssl.SSLError on an unparseable pinned
     # cert. Both used to happen outside the try, so a single bad server aborted
     # the whole cycle and every server after it silently stopped reconciling.
     try:
-        password = decrypt_secret(server.password_enc)
+        password = decrypt_secret(plan.password_enc)
         client = AdGuardClient(
-            server.url, server.username, password,
+            plan.url, plan.username, password,
             timeout=settings.adguard_timeout_seconds,
-            verify=verify_for(server.tls_cert),
+            verify=verify_for(plan.tls_cert),
         )
     except Exception as exc:
-        logger.exception("could not build a client for %s", server.name)
+        logger.exception("could not build a client for %s", plan.name)
         result.status = SyncStatus.error
         result.error = str(exc)
-        server.status = SyncStatus.error
-        server.in_sync = False
-        server.last_error = f"Server configuration error: {exc}"
-        session.add(server)
-        session.commit()
-        session.refresh(server)
-        return result
+        updates.status = SyncStatus.error
+        updates.in_sync = False
+        updates.last_error = f"Server configuration error: {exc}"
+        return result, updates
 
     try:
         status = await client.status()
         result.version = status.get("version")
-        server.version = result.version
-        server.last_seen = datetime.now(timezone.utc)
+        updates.version = result.version
+        updates.last_seen = datetime.now(timezone.utc)
 
         # Update-available check (best-effort; uses AdGuard's cached result).
         try:
             vinfo = await client.version_check()
             new_version = (vinfo.get("new_version") or "").strip()
-            server.latest_version = new_version or None
-            server.update_available = bool(new_version) and new_version != (result.version or "")
+            updates.latest_version = new_version or None
+            updates.update_available = bool(new_version) and new_version != (result.version or "")
         except AdGuardError:
             pass  # update checks may be disabled; don't fail the sync
 
         current = set(await client.list_rewrites())
-        desired_keys = {r.key() for r in desired}
+        desired_keys = {r.key() for r in plan.rewrites}
         current_keys = {r.key() for r in current}
 
-        to_add = [r for r in desired if r.key() not in current_keys]
+        to_add = [r for r in plan.rewrites if r.key() not in current_keys]
         # Only prune records we'd otherwise manage, unless prune is enabled.
         to_delete = (
             [r for r in current if r.key() not in desired_keys]
-            if server.prune
+            if plan.prune
             else []
         )
 
@@ -265,16 +384,10 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         # We only push a list when its desired set is non-empty, so we never blank
         # out a server's config just because nothing is defined here.
         upstreams_in_sync = True
-        if server.manage_upstreams:
+        if plan.manage_upstreams:
             info = await client.dns_info()
-            desired_lists = {
-                "upstream_dns": desired_upstreams_for_server(session, server),
-                "bootstrap_dns": _addresses_of_kind(session, server, DnsServerKind.bootstrap),
-                "fallback_dns": _addresses_of_kind(session, server, DnsServerKind.fallback),
-                "local_ptr_upstreams": _addresses_of_kind(session, server, DnsServerKind.private),
-            }
             payload: dict = {}
-            for key, desired_vals in desired_lists.items():
+            for key, desired_vals in plan.upstream_lists.items():
                 if desired_vals and set(info.get(key) or []) != set(desired_vals):
                     payload[key] = desired_vals
             # Ensure private resolvers actually take effect when we set them.
@@ -289,48 +402,65 @@ async def reconcile_server(session: Session, server: Server, *, dry_run: bool = 
         # Optionally reconcile filtering (opt-in per server): blocklists,
         # allowlists and blocked services.
         filtering_in_sync = True
-        if server.manage_filtering:
-            filtering_changed = await _reconcile_filtering(session, server, client, dry_run=dry_run)
+        if plan.manage_filtering:
+            filtering_changed = await _reconcile_filtering(plan, client, dry_run=dry_run)
             filtering_in_sync = not filtering_changed
         result.filtering_changed = not filtering_in_sync
 
-        server.status = SyncStatus.online
-        server.in_sync = not to_add and not to_delete and upstreams_in_sync and filtering_in_sync
-        server.last_error = None
-        server.cooldown_until = None  # healthy again
+        updates.status = SyncStatus.online
+        updates.in_sync = not to_add and not to_delete and upstreams_in_sync and filtering_in_sync
+        updates.last_error = None
+        updates.clear_cooldown = True  # healthy again
         if not dry_run:
-            server.last_synced = datetime.now(timezone.utc)
+            updates.last_synced = datetime.now(timezone.utc)
 
     except AdGuardError as exc:
-        logger.warning("reconcile failed for %s: %s", server.name, exc)
+        logger.warning("reconcile failed for %s: %s", plan.name, exc)
         result.status = SyncStatus.error if exc.status_code in (401, 403, 429) else SyncStatus.offline
         result.error = str(exc)
-        server.in_sync = False
+        updates.in_sync = False
         if exc.status_code in (401, 403, 429):
             # Auth rejected / rate-limited: back off so we don't deepen the lockout.
             secs = exc.retry_after or (900 if exc.status_code == 429 else 300)
-            server.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=secs)
-            server.status = SyncStatus.error
+            updates.cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=secs)
+            updates.status = SyncStatus.error
             if exc.status_code == 429:
-                server.last_error = f"Auth rate-limited by AdGuard (429); backing off ~{secs // 60}m. Check the server's credentials."
+                updates.last_error = f"Auth rate-limited by AdGuard (429); backing off ~{secs // 60}m. Check the server's credentials."
             else:
-                server.last_error = f"Authentication failed (HTTP {exc.status_code}); retrying in ~{secs // 60}m. Check the server's credentials."
+                updates.last_error = f"Authentication failed (HTTP {exc.status_code}); retrying in ~{secs // 60}m. Check the server's credentials."
         else:
-            server.status = SyncStatus.offline
-            server.last_error = str(exc)
+            updates.status = SyncStatus.offline
+            updates.last_error = str(exc)
     except Exception as exc:  # defensive: never let one server kill the loop
-        logger.exception("unexpected error reconciling %s", server.name)
+        logger.exception("unexpected error reconciling %s", plan.name)
         result.status = SyncStatus.error
         result.error = str(exc)
-        server.status = SyncStatus.error
-        server.in_sync = False
-        server.last_error = str(exc)
+        updates.status = SyncStatus.error
+        updates.in_sync = False
+        updates.last_error = str(exc)
     finally:
         await client.aclose()
 
-    session.add(server)
+    return result, updates
+
+
+async def reconcile_server(session: Session, server: Server, *, dry_run: bool = False) -> ServerSyncResult:
+    """Reconcile one server: snapshot -> network -> persist.
+
+    The session's connection is released back to the pool before any network
+    I/O and only re-acquired to write the outcome, so a slow or unreachable
+    server no longer ties up a database connection for the whole exchange.
+    """
+    plan = build_plan(session, server)
+    server_id = plan.server_id
+    # Ends the read transaction, returning the connection to the pool.
     session.commit()
-    session.refresh(server)
+
+    result, updates = await apply_plan(plan, dry_run=dry_run)
+
+    apply_updates(session, server_id, updates)
+    if server in session:
+        session.refresh(server)
     return result
 
 
@@ -426,28 +556,58 @@ def _due_servers(force: bool, only_server_id: int | None) -> list[int]:
         return due
 
 
-async def _reconcile_one(server_id: int, *, dry_run: bool) -> ServerSyncResult | None:
-    """Reconcile a single server in its own session, never raising.
+# One lock per server. This is the only mutual exclusion reconciliation actually
+# needs: two concurrent passes over the *same* server would compute the same diff
+# and both apply it. A single global lock also prevented that, but it made a
+# manual "Sync now" queue behind the entire in-flight fleet cycle, so the request
+# hung for as long as the slowest server's timeouts took.
+_server_locks: dict[int, asyncio.Lock] = {}
 
-    Each server gets a fresh short-lived Session: the previous single
-    cycle-long session held a SQLite connection open across every server's
-    HTTP round-trips.
+
+def _lock_for(server_id: int) -> asyncio.Lock:
+    lock = _server_locks.get(server_id)
+    if lock is None:
+        lock = _server_locks.setdefault(server_id, asyncio.Lock())
+    return lock
+
+
+async def _reconcile_one(server_id: int, *, dry_run: bool) -> ServerSyncResult | None:
+    """Reconcile a single server, never raising.
+
+    Skips the server if another pass is already mid-flight for it, rather than
+    waiting: the caller is either the periodic loop (which will come back around
+    anyway) or a manual trigger (which should answer promptly).
     """
-    try:
-        with Session(engine) as session:
-            server = session.get(Server, server_id)
-            if server is None:  # deleted mid-cycle
-                return None
-            return await reconcile_server(session, server, dry_run=dry_run)
-    except Exception as exc:
-        # Last line of defence. One server must never take down the cycle.
-        logger.exception("reconcile of server id=%s failed outright", server_id)
+    lock = _lock_for(server_id)
+    if lock.locked():
+        logger.info("server id=%s is already reconciling; skipping this pass", server_id)
         return ServerSyncResult(
             server_id=server_id,
             server_name=f"server #{server_id}",
-            status=SyncStatus.error,
-            error=str(exc),
+            status=SyncStatus.unknown,
+            error="A sync for this server is already in progress.",
         )
+
+    async with lock:
+        try:
+            # The session is deliberately NOT held across the HTTP calls below;
+            # see reconcile_server. Holding one checked a pooled SQLite
+            # connection out for the full duration of every server's network
+            # round-trips, which starved API requests once a few servers were slow.
+            with Session(engine) as session:
+                server = session.get(Server, server_id)
+                if server is None:  # deleted mid-cycle
+                    return None
+                return await reconcile_server(session, server, dry_run=dry_run)
+        except Exception as exc:
+            # Last line of defence. One server must never take down the cycle.
+            logger.exception("reconcile of server id=%s failed outright", server_id)
+            return ServerSyncResult(
+                server_id=server_id,
+                server_name=f"server #{server_id}",
+                status=SyncStatus.error,
+                error=str(exc),
+            )
 
 
 async def reconcile_all(
@@ -503,25 +663,44 @@ class SyncManager:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
-        # Serialises reconcile cycles. Without it a manual POST /api/sync/run
-        # could race the background loop (or itself) over the same servers, so
-        # both would compute the same diff and both apply it.
-        self._run_lock = asyncio.Lock()
+        # Guards the *periodic* cycle only, and is never waited on: if a cycle
+        # overruns the interval we skip the next tick rather than queueing more.
+        # Correctness against concurrent passes over the same server is handled
+        # by the per-server locks in _reconcile_one, so callers never block on
+        # the whole fleet.
+        self._cycle_lock = asyncio.Lock()
         self.last_run: datetime | None = None
         self.last_results: list[ServerSyncResult] = []
+
+    @property
+    def cycle_in_progress(self) -> bool:
+        return self._cycle_lock.locked()
 
     async def run_once(
         self, *, dry_run: bool = False, only_server_id: int | None = None, force: bool = False
     ) -> list[ServerSyncResult]:
-        """Run one reconcile cycle, waiting for any in-flight cycle to finish."""
-        async with self._run_lock:
-            results = await reconcile_all(
-                dry_run=dry_run, only_server_id=only_server_id, force=force
+        """Run a reconcile pass now.
+
+        Does not wait for an in-flight periodic cycle. Any server that cycle is
+        currently working on is reported as already-in-progress and left alone.
+        """
+        results = await reconcile_all(
+            dry_run=dry_run, only_server_id=only_server_id, force=force
+        )
+        if not dry_run and only_server_id is None:
+            self.last_results = results
+            self.last_run = datetime.now(timezone.utc)
+        return results
+
+    async def _run_periodic_cycle(self) -> None:
+        if self._cycle_lock.locked():
+            logger.warning(
+                "previous reconcile cycle is still running after %ss; skipping this tick",
+                settings.sync_interval_seconds,
             )
-            if not dry_run and only_server_id is None:
-                self.last_results = results
-                self.last_run = datetime.now(timezone.utc)
-            return results
+            return
+        async with self._cycle_lock:
+            await self.run_once()
 
     async def _loop(self) -> None:
         logger.info(
@@ -530,7 +709,7 @@ class SyncManager:
         )
         while not self._stop.is_set():
             try:
-                await self.run_once()
+                await self._run_periodic_cycle()
             except asyncio.CancelledError:
                 raise
             except Exception:

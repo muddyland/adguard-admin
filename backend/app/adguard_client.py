@@ -31,6 +31,35 @@ class AdGuardError(Exception):
         self.retry_after = retry_after
 
 
+# httpx timeout classes stringify to an empty message, which produced the
+# uselessly bare "GET /control/status failed:" in the UI. Name the failure mode.
+_TRANSPORT_HINTS: list[tuple[type[Exception], str]] = [
+    (httpx.ConnectTimeout, "timed out establishing a TCP/TLS connection"),
+    (httpx.ReadTimeout, "connected, but the server sent no response in time"),
+    (httpx.WriteTimeout, "timed out sending the request"),
+    (httpx.PoolTimeout, "timed out waiting for a free connection in the client pool"),
+    (httpx.ConnectError, "could not connect (DNS failure, refused, or unroutable)"),
+    (httpx.ReadError, "the connection dropped while reading the response"),
+    (httpx.RemoteProtocolError, "the server spoke invalid HTTP"),
+    (httpx.TooManyRedirects, "too many redirects"),
+]
+
+
+def describe_transport_error(exc: Exception, timeout: float | None = None) -> str:
+    """Human-readable cause for an httpx failure.
+
+    Always returns something: `str(exc)` is empty for every timeout subclass, so
+    falling back to it alone hid the actual problem from operators.
+    """
+    detail = str(exc).strip()
+    hint = next((h for cls, h in _TRANSPORT_HINTS if isinstance(exc, cls)), None)
+    if hint is None:
+        hint = exc.__class__.__name__
+    if isinstance(exc, httpx.TimeoutException) and timeout is not None:
+        hint = f"{hint} after {timeout:g}s"
+    return f"{hint} ({detail})" if detail else hint
+
+
 def _retry_after(resp: httpx.Response) -> int | None:
     ra = resp.headers.get("retry-after")
     if ra:
@@ -58,6 +87,7 @@ class AdGuardClient:
         verify=True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
         auth = (username, password) if username else None
         # `verify` may be True/False or an ssl.SSLContext pinned to a server cert.
         self._client = httpx.AsyncClient(
@@ -90,7 +120,9 @@ class AdGuardClient:
                 retry_after=_retry_after(r),
             ) from exc
         except httpx.HTTPError as exc:
-            raise AdGuardError(f"{method} {path} failed: {exc}") from exc
+            raise AdGuardError(
+                f"{method} {path} failed: {describe_transport_error(exc, self.timeout)}"
+            ) from exc
 
     async def status(self) -> dict:
         return (await self._request("GET", "/control/status")).json()
