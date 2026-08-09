@@ -134,11 +134,36 @@ build:image:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
     - docker build --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
-    # The image must not run as root.
+    - IMAGE=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
+    - SECRET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "import secrets; print(secrets.token_urlsafe(48))")
+    - FERNET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    # Upgrade regression guard. The image used to run as root, so any volume from
+    # an older build is root-owned; switching to uid 10001 broke every existing
+    # deployment with "attempt to write a readonly database". Simulate exactly
+    # that and assert the entrypoint repairs it AND still drops privileges.
     - |
-      UID_IN_IMAGE=$(docker run --rm --entrypoint sh $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME -c 'id -u')
-      test "$UID_IN_IMAGE" != "0" || { echo "image runs as root"; exit 1; }
-      echo "image runs as uid $UID_IN_IMAGE"
+      docker volume rm -f ci_legacy_data || true
+      docker run --rm -v ci_legacy_data:/data --entrypoint sh $IMAGE -c \
+        'python -c "import sqlite3; sqlite3.connect(\"/data/adguard_admin.db\").execute(\"CREATE TABLE t(x)\")" && chown -R 0:0 /data'
+      docker run -d --name ci_upgrade -v ci_legacy_data:/data \
+        -e SECRET_KEY="$SECRET_KEY" -e FERNET_KEY="$FERNET_KEY" \
+        -e ADMIN_PASSWORD=ci-not-the-default -e SYNC_INTERVAL_SECONDS=3600 \
+        --security-opt no-new-privileges:true \
+        --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
+        --cap-add SETUID --cap-add SETGID \
+        $IMAGE
+      for i in $(seq 1 30); do
+        docker logs ci_upgrade 2>&1 | grep -q "Application startup complete" && break
+        sleep 2
+      done
+      docker logs ci_upgrade
+      docker logs ci_upgrade 2>&1 | grep -q "Application startup complete" \
+        || { echo "FAIL: container did not start over a legacy root-owned volume"; exit 1; }
+      RUN_UID=$(docker exec ci_upgrade awk '/^Uid:/{print $2}' /proc/1/status)
+      test "$RUN_UID" = "10001" \
+        || { echo "FAIL: application process runs as uid $RUN_UID, expected 10001"; exit 1; }
+      echo "OK: healed a legacy volume and runs as uid $RUN_UID"
+      docker rm -f ci_upgrade; docker volume rm -f ci_legacy_data
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
   rules:
     - if: '$CI_COMMIT_REF_NAME == "main"'

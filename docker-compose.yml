@@ -30,12 +30,20 @@ services:
     ports:
       # host:container — UI + API both served on container port 8000.
       - "8080:8000"
-    # The image already runs as an unprivileged user; these close off the rest.
-    read_only: false          # SQLite needs to write /data
+    # The app process always runs as uid 10001. The container starts as root
+    # only so the entrypoint can take ownership of a data volume left root-owned
+    # by an older build, then immediately drops privileges — so it needs just
+    # enough capability to chown and to change uid.
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
 
 volumes:
   adguard_admin_data:

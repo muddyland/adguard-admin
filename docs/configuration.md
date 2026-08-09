@@ -131,8 +131,42 @@ address is self-asserted and is ignored.
   `X-Content-Type-Options`, `Referrer-Policy` and `Cross-Origin-Opener-Policy` are
   set on every response except the UI proxy, which is isolated by iframe
   sandboxing instead.
-- **Container.** The image runs as uid 10001 with a read-only `/app`; only `/data`
-  is writable. A `HEALTHCHECK` polls `/api/health`.
+- **Container.** The application process runs as uid 10001 with no effective
+  capabilities and a read-only `/app`; only `/data` is writable. A `HEALTHCHECK`
+  polls `/api/health`. See [upgrading from a root-era image](#upgrading-from-a-root-era-image).
 - Dependency versions are pinned to patched releases — see `backend/requirements.txt`
   for the CVEs each pin addresses. CI runs `pip-audit`, `npm audit` and
   `osv-scanner` on every pipeline.
+
+## Upgrading from a root-era image
+
+Builds before the security hardening ran the container as **root**, so any
+`/data` volume they created contains root-owned files. The app now runs as uid
+10001, which cannot write them — SQLite reports this as the rather unhelpful:
+
+```
+sqlite3.OperationalError: attempt to write a readonly database
+```
+
+**You do not normally need to do anything.** The container starts as root purely
+so its entrypoint can take ownership of `/data`, then immediately drops to uid
+10001 before exec'ing the app. You will see this once, on the first start after
+upgrading:
+
+```
+entrypoint: /data is not writable by uid 10001; taking ownership
+entrypoint: ownership of /data updated
+```
+
+The application process itself never runs as root.
+
+If you have overridden `user:` in your compose file, or dropped `CAP_CHOWN`, the
+entrypoint cannot repair the volume and will say so. Fix it once by hand:
+
+```bash
+docker compose run --rm --user root --entrypoint sh app -c 'chown -R 10001:10001 /data'
+docker compose up -d
+```
+
+Once the volume is correct you can pin `user: "10001:10001"` in compose to skip
+the root phase entirely.

@@ -150,7 +150,10 @@ local accounts, with optional group→role mapping. See
   managed server cannot read the admin session.
 - Every response carries a strict CSP plus `X-Frame-Options`, `X-Content-Type-Options`,
   `Referrer-Policy` and `Cross-Origin-Opener-Policy` (HSTS too, over HTTPS).
-- The container runs as uid 10001 with a read-only `/app` and a `HEALTHCHECK`.
+- The application process runs as uid 10001 with no effective capabilities, a
+  read-only `/app`, and a `HEALTHCHECK`. Upgrading from a pre-hardening image?
+  The entrypoint takes ownership of the existing `/data` volume on first start —
+  see [upgrading from a root-era image](docs/configuration.md#upgrading-from-a-root-era-image).
 - Dependency versions are pinned to patched releases — see `backend/requirements.txt`
   for the CVEs each pin addresses (python-jose→PyJWT, passlib→pwdlib, Authlib ≥1.7.2,
   Starlette ≥1.3.1, cryptography ≥50.0.0). CI runs `pip-audit`, `npm audit` and
