@@ -14,6 +14,10 @@ pydantic-settings==2.14.2
 
 # HTTP client for talking to AdGuard Home instances
 httpx==0.28.1
+# Transitive (httpx -> httpcore -> anyio, and authlib's requests path), pinned
+# here because a floor is the only way to hold a transitive dependency to a
+# patched release. >=3.15 fixes CVE-2026-45409.
+idna>=3.15
 
 # Auth / crypto
 # PyJWT replaces python-jose (CVE-2024-33663 algo-confusion, CVE-2024-33664 DoS; unmaintained)

@@ -1,21 +1,44 @@
 # syntax=docker/dockerfile:1
+#
+# Package sources are build arguments. They default to the public registries so
+# a clean clone builds anywhere; internal builds override them to point at the
+# caching registry, which enforces the CVE block policy:
+#
+#   docker build --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+#                --build-arg NPM_CONFIG_REGISTRY="$NPM_CONFIG_REGISTRY" .
+#
+# Both are read natively by their tool, and being ARGs they are build-time only,
+# so no internal address is baked into the published image. A build container
+# that cannot resolve the internal DNS zone also needs --add-host.
+ARG PIP_INDEX_URL=https://pypi.org/simple/
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+
 # ---- Stage 1: build the Vue frontend ----
 FROM node:22-alpine AS frontend
+ARG NPM_CONFIG_REGISTRY
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
+# The lockfile keeps upstream registry.npmjs.org URLs; npm's default
+# replace-registry-host=npmjs rewrites them to whichever registry is configured,
+# so the lock stays usable both inside and outside the network.
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
 # ---- Stage 2: backend runtime, serving API + built SPA ----
 FROM python:3.12-slim
+ARG PIP_INDEX_URL
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 # Persist the DB on a mounted volume, not in the image.
 ENV DATABASE_URL=sqlite:////data/adguard_admin.db
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The base image ships a pip with its own advisories (CVE-2026-8643 and
+# friends), and it stays in the final image where a scanner will find it — so
+# upgrade it first, then install against it.
+RUN pip install --no-cache-dir --upgrade "pip>=26.2" \
+ && pip install --no-cache-dir -r requirements.txt
 
 COPY backend/app ./app
 # The SPA build lands in /app/static, which app.main serves as a fallback route.

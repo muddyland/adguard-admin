@@ -1,13 +1,21 @@
 # Test/lint image for the backend. Build context is the repo's backend/ dir.
 #   docker build -f backend/Dockerfile.test -t adguard-admin-test backend
 #   docker run --rm adguard-admin-test
+#
+# Defaults to the public index; pass --build-arg PIP_INDEX_URL="$PIP_INDEX_URL"
+# to build against the internal caching registry instead. A build container that
+# cannot resolve the internal DNS zone also needs --add-host.
 FROM python:3.12-slim
+ARG PIP_INDEX_URL=https://pypi.org/simple/
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
 
 COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements-dev.txt
+# requirements-dev pins pip itself to a patched release; upgrade before
+# resolving so the version that does the resolving is the one we asked for.
+RUN pip install --no-cache-dir --upgrade "pip>=26.2" \
+ && pip install --no-cache-dir -r requirements-dev.txt
 
 COPY pytest.ini ./
 COPY app ./app

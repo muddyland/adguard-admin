@@ -1,8 +1,17 @@
 # Test + lint tooling. Installed on top of requirements.txt.
 -r requirements.txt
 
-pytest==8.4.2
+# pytest >=9.0.3 fixes CVE-2025-71176
+pytest==9.0.3
 anyio==4.11.0
 ruff==0.14.4
 # Dependency vulnerability scanning, wired into CI.
 pip-audit==2.9.0
+
+# Floors for pip-audit's own dependency tree. Nothing imports these directly,
+# but they are what a scanner resolves and reports against this file.
+# filelock >=3.20.3 fixes CVE-2026-22701 and CVE-2025-68146 (via cachecontrol).
+filelock>=3.20.3
+# pip >=26.2 fixes CVE-2026-8643 and PYSEC-2026-3721. pip-audit shells out to
+# pip to resolve dependencies, so the resolver's own version matters here.
+pip>=26.2

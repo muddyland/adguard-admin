@@ -129,6 +129,33 @@ npm install
 npm run dev                   # http://localhost:5173, proxies /api to :8000
 ```
 
+## Package registry
+
+Builds and CI can install from an internal caching registry (**minireg**) instead
+of public PyPI/npm, so dependencies come from a proxy that enforces a CVE block
+policy. It is **opt-in and off by default** — a clean clone builds against the
+public registries with no configuration.
+
+The registry's address is deliberately not in this repository. It comes from the
+environment:
+
+| Where | How to point it inward |
+|---|---|
+| Your machine | `minireg configure` — writes `~/.npmrc` and `~/.config/pip/pip.conf` |
+| CI | Set `MINIREG_ENABLED=true` plus `MINIREG_URL` / `MINIREG_TOKEN` (and `MINIREG_IP` where the runner can't resolve internal DNS) in **Settings → CI/CD → Variables**. `.gitlab-ci.yml` derives `PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` from them. |
+| `docker build` | `--build-arg PIP_INDEX_URL=… --build-arg NPM_CONFIG_REGISTRY=…`, plus `--add-host` if the build container can't resolve it. Both are build-time only, so no internal address is baked into the image. |
+
+`frontend/package-lock.json` keeps upstream `registry.npmjs.org` URLs on purpose:
+npm's default `replace-registry-host=npmjs` rewrites them to whichever registry
+is configured, so one lockfile works inside and outside the network.
+
+> **`npm audit` does not work against the internal registry.** It asks the
+> *configured registry* for advisories, and minireg does not serve npm's
+> bulk-advisory endpoint — so it reports "found 0 vulnerabilities" for a tree the
+> public registry flags as high. CI runs `npm audit` only when pointed at the
+> public registry, and `minireg audit --fail-on medium` otherwise; a gate that
+> cannot fail is worse than no gate.
+
 ## OIDC / SSO
 
 AdGuard Admin supports OpenID Connect single sign-on (tested with Authentik) alongside
@@ -163,8 +190,12 @@ local accounts, with optional group→role mapping. See
   see [upgrading from a root-era image](docs/configuration.md#upgrading-from-a-root-era-image).
 - Dependency versions are pinned to patched releases — see `backend/requirements.txt`
   for the CVEs each pin addresses (python-jose→PyJWT, passlib→pwdlib, Authlib ≥1.7.2,
-  Starlette ≥1.3.1, cryptography ≥50.0.0). CI runs `pip-audit`, `npm audit` and
-  `osv-scanner` on every pipeline.
+  Starlette ≥1.3.1, cryptography ≥50.0.0, idna ≥3.15). Transitive packages that a
+  scanner attributes to us carry explicit floors, including the dev toolchain's own
+  (`pytest`, `filelock`, `pip`), since a floor is the only way to hold a transitive
+  dependency to a patched release. The images upgrade `pip` before installing, because
+  the base image's own pip ships with advisories and stays in the final layer.
+  CI runs `pip-audit`, an npm-side audit and `osv-scanner` on every pipeline.
 
 ## Running the tests
 
