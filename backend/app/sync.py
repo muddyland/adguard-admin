@@ -81,6 +81,9 @@ class ServerUpdates:
     version: str | None = None
     latest_version: str | None = None
     update_available: bool = False
+    # Whether AdGuard says it can replace its own binary (false inside Docker).
+    can_autoupdate: bool = False
+    update_check_disabled: bool = False
     last_error: str | None = None
     last_seen: datetime | None = None
     last_synced: datetime | None = None
@@ -237,6 +240,8 @@ def apply_updates(session: Session, server_id: int, updates: ServerUpdates) -> N
     if updates.latest_version is not None or updates.status == SyncStatus.online:
         server.latest_version = updates.latest_version
         server.update_available = updates.update_available
+        server.can_autoupdate = updates.can_autoupdate
+        server.update_check_disabled = updates.update_check_disabled
     if updates.last_seen is not None:
         server.last_seen = updates.last_seen
     if updates.last_synced is not None:
@@ -354,6 +359,11 @@ async def apply_plan(plan: ServerPlan, *, dry_run: bool = False) -> tuple[Server
             new_version = (vinfo.get("new_version") or "").strip()
             updates.latest_version = new_version or None
             updates.update_available = bool(new_version) and new_version != (result.version or "")
+            updates.can_autoupdate = bool(vinfo.get("can_autoupdate"))
+            # AdGuard answers {"disabled": true} when its update check is off; it
+            # then never reports a new release, which is not the same as being
+            # current. Record it so the UI can say which one it is.
+            updates.update_check_disabled = bool(vinfo.get("disabled"))
         except AdGuardError:
             pass  # update checks may be disabled; don't fail the sync
 
@@ -564,11 +574,17 @@ def _due_servers(force: bool, only_server_id: int | None) -> list[int]:
 _server_locks: dict[int, asyncio.Lock] = {}
 
 
-def _lock_for(server_id: int) -> asyncio.Lock:
+def lock_for(server_id: int) -> asyncio.Lock:
+    """The mutual-exclusion lock for one server.
+
+    Shared with the auto-updater (app.updater): an upgrade restarts AdGuard
+    Home, so a reconcile pass must not be talking to the same box at the time.
+    """
     lock = _server_locks.get(server_id)
     if lock is None:
         lock = _server_locks.setdefault(server_id, asyncio.Lock())
     return lock
+
 
 
 async def _reconcile_one(server_id: int, *, dry_run: bool) -> ServerSyncResult | None:
@@ -578,7 +594,7 @@ async def _reconcile_one(server_id: int, *, dry_run: bool) -> ServerSyncResult |
     waiting: the caller is either the periodic loop (which will come back around
     anyway) or a manual trigger (which should answer promptly).
     """
-    lock = _lock_for(server_id)
+    lock = lock_for(server_id)
     if lock.locked():
         logger.info("server id=%s is already reconciling; skipping this pass", server_id)
         return ServerSyncResult(

@@ -60,6 +60,17 @@ class ProvisionStatus(str, Enum):
     revoked = "revoked"      # cancelled before use
 
 
+class UpdateState(str, Enum):
+    """Outcome of the last automatic-update attempt on a server."""
+    idle = "idle"                # never attempted, or nothing to do
+    running = "running"          # an upgrade is in flight right now
+    succeeded = "succeeded"      # the box came back on the new version
+    failed = "failed"            # the attempt errored; retried after a backoff
+    # AdGuard cannot upgrade itself here (a container, or a read-only install).
+    # The box updates itself instead — see the on-box updater in updater.py.
+    delegated = "delegated"
+
+
 # --------------------------------------------------------------------------- #
 # Users
 # --------------------------------------------------------------------------- #
@@ -104,6 +115,28 @@ class Server(SQLModel, table=True):
     manage_filtering: bool = False
     # Pinned PEM certificate for verifying TLS to this server (self-signed boxes).
     tls_cert: Optional[str] = None
+
+    # --- Automatic AdGuard Home upgrades ---------------------------------- #
+    # Opt-in: keep this server's AdGuard Home on the latest release.
+    auto_update: bool = False
+    # How AdGuard Home was installed here. Recorded by provisioning; settable by
+    # hand for servers added manually. It decides *who* performs the upgrade:
+    # a bare-metal box is upgraded by this app over the control API, a container
+    # by the on-box updater (a container cannot replace its own image).
+    install_method: Optional[InstallMethod] = None
+    # Whether AdGuard itself reports that it can self-upgrade (false in Docker).
+    can_autoupdate: bool = False
+    # AdGuard's version check is switched off on this server (its version.json
+    # answers {"disabled": true}), so it will never report a new release. Without
+    # this the server looks permanently, and misleadingly, up to date.
+    update_check_disabled: bool = False
+    update_state: UpdateState = Field(default=UpdateState.idle)
+    update_attempted_at: Optional[datetime] = None
+    # Target of the last attempt; keyed on so a failure is retried with a backoff
+    # and a delegated/unsupported target is not re-attempted every cycle.
+    update_attempted_version: Optional[str] = None
+    update_completed_at: Optional[datetime] = None
+    update_error: Optional[str] = None
 
     # Health / sync bookkeeping (updated by the reconcile loop)
     status: SyncStatus = Field(default=SyncStatus.unknown)
@@ -219,6 +252,8 @@ class ProvisioningToken(SQLModel, table=True):
     zone_id: Optional[int] = Field(default=None, foreign_key="zone.id")
     method: InstallMethod = Field(default=InstallMethod.docker)
     prune: bool = False
+    # Install the auto-updater on the box and enable auto-update on the Server.
+    auto_update: bool = False
 
     ssl_enabled: bool = False
     # Address the admin app will use to reach the box (cert SAN). Required for SSL.

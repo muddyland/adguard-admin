@@ -55,6 +55,7 @@ def _command(token: str) -> str:
 def _to_read(t: ProvisioningToken) -> ProvisionTokenRead:
     return ProvisionTokenRead(
         id=t.id, name=t.name, zone_id=t.zone_id, method=t.method,
+        auto_update=t.auto_update,
         ssl_enabled=t.ssl_enabled, connect_address=t.connect_address,
         http_port=t.http_port, https_port=t.https_port, status=t.status,
         token=t.token, command=_command(t.token), created_at=t.created_at,
@@ -101,6 +102,9 @@ def create_token(payload: ProvisionRequest, _: RequireEditor, session: SessionDe
         zone_id=payload.zone_id,
         method=payload.method,
         prune=payload.prune,
+        auto_update=(
+            settings.auto_update_default if payload.auto_update is None else payload.auto_update
+        ),
         ssl_enabled=payload.ssl_enabled,
         connect_address=payload.connect_address,
         http_port=http_port,
@@ -196,6 +200,7 @@ def get_config(token: str, session: SessionDep):
         f"DNS_PORT={int(t.dns_port)}",
         f"ADMIN_USER={shlex.quote(t.admin_username)}",
         f"ADMIN_PASSWORD={shlex.quote(password)}",
+        f"AUTO_UPDATE={'true' if t.auto_update else 'false'}",
         f"CONNECT_ADDRESS={shlex.quote(t.connect_address or '')}",
         f"SERVER_NAME={shlex.quote(t.name)}",
     ]
@@ -259,6 +264,8 @@ def complete(token: str, payload: ProvisionComplete, session: SessionDep):
         zone_id=t.zone_id,
         enabled=True,
         prune=t.prune,
+        auto_update=t.auto_update,
+        install_method=t.method,
         tls_cert=t.tls_cert if t.ssl_enabled else None,
         status=SyncStatus.unknown,
     )
@@ -396,6 +403,17 @@ if [ "$SSL" = "true" ]; then
        red "Not registering. Check the cert and that the https port doesn't clash with the web port."
        exit 1 ;;
   esac
+fi
+
+# Automatic AdGuard Home updates. A bare-metal install is upgraded by the admin
+# app over AdGuard's own control API, so there is nothing to install here. A
+# container cannot replace its own image, so it gets an on-box updater instead.
+if [ "${{AUTO_UPDATE:-false}}" = "true" ] && [ "$METHOD" = "docker" ]; then
+  green "Installing the on-box auto-updater for the AdGuard Home container..."
+  if ! curl -fsSL "$BASE_URL/api/updates/docker-agent.sh" | CONTAINER=adguardhome bash; then
+    red "Could not install the auto-updater. The server is still fine and will be registered."
+    red "Retry later with: curl -fsSL $BASE_URL/api/updates/docker-agent.sh | sudo bash"
+  fi
 fi
 
 if [ -n "${{CONNECT_ADDRESS:-}}" ]; then ADDR="$CONNECT_ADDRESS"; else ADDR="$(hostname -I 2>/dev/null | awk '{{print $1}}')"; fi

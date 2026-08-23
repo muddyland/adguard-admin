@@ -46,7 +46,7 @@ immediately.
 
 - **Status** — `online`, `offline`, `error`, or `unknown`, based on the last contact.
 - **Version** — the AdGuard Home version reported by the server; an *update available*
-  hint appears when a newer release exists.
+  hint appears when a newer release exists, linking to [Updates](updates.md).
 - **Sync** — whether the server's rewrites currently match the desired state.
 - **Last synced** — when the engine last reconciled this server.
 
@@ -58,6 +58,8 @@ immediately.
 | **Prune** | When on, the engine *removes* rewrites that aren't in the desired set, mirroring the admin DB exactly. Off by default — see [prune](concepts.md#prune). |
 | **Manage upstreams** | When on, the server also receives [DNS settings](dns-settings.md) (upstream resolvers and forward zones). When off, the server keeps its own DNS config. |
 | **Manage filtering** | When on, the server also receives [filtering](filtering.md) (blocklists, allowlists and blocked services). When off, the server keeps its own filtering config. |
+| **Auto-update** | When on, AdGuard Home *itself* is kept on the latest release — see [Updates](updates.md). Off by default: an upgrade restarts AdGuard Home, briefly stopping DNS on that server. |
+| **Install method** | How AdGuard Home was installed here (`Docker` / `Bare-metal`). It decides who performs an upgrade: this app over AdGuard's control API for bare-metal, the [on-box updater](updates.md#docker-servers-the-on-box-updater) for a container. Set automatically for [provisioned](provisioning.md) servers. |
 
 ## Importing existing config
 

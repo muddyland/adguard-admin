@@ -28,6 +28,10 @@ server comes back online.
 - **Import** — pull a server's existing rewrites *and* upstream config into the admin DB.
 - **Provisioning** — one-line, token-based install of new servers (Docker or bare-metal)
   with optional server-side TLS cert.
+- **Automatic updates** — keep the AdGuard Home **installations** current, not just
+  their config: bare-metal boxes are upgraded over AdGuard's own control API on a
+  schedule (with an optional maintenance window), and Docker hosts get a one-line
+  on-box updater that pulls the image and recreates the container.
 - **Dashboard metrics** — combined query/blocked stats across the fleet, filterable by
   zone and server.
 - **Users & RBAC** — `admin` / `editor` / `viewer` roles.
@@ -59,6 +63,7 @@ Full guides live in [`docs/`](docs/README.md):
 | [DNS settings](docs/dns-settings.md) | Upstream resolvers and forward zones |
 | [Filtering](docs/filtering.md) | Blocklists, allowlists and blocked services |
 | [Provisioning](docs/provisioning.md) | One-line install of new AdGuard servers |
+| [Updates](docs/updates.md) | Keeping the AdGuard Home containers/binaries themselves up to date |
 | [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
 | [Users & SSO](docs/users-and-sso.md) | Roles and OIDC / Authentik login |
 | [Configuration reference](docs/configuration.md) | Every environment variable |
@@ -180,6 +185,8 @@ docker run --rm adguard-admin-test ruff check app tests
 | CRUD | `/api/servers` | editor | Manage servers (`/test` probes a server) |
 | CRUD | `/api/records` | editor | Manage DNS records |
 | POST | `/api/sync/run[/{id}]` | editor | Trigger reconciliation |
+| GET | `/api/updates` | viewer | Fleet update posture |
+| POST | `/api/updates[/{id}]/run` | editor | Update AdGuard Home itself |
 | CRUD | `/api/users` | admin | Manage users |
 
 ## License

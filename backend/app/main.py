@@ -26,12 +26,14 @@ from .routers import (
     records,
     servers,
     sync,
+    updates,
     upstreams,
     users,
     zones,
 )
 from .security import hash_password
 from .sync import sync_manager
+from .updater import update_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("adguard_admin")
@@ -107,8 +109,10 @@ async def lifespan(app: FastAPI):
     init_db()
     bootstrap_admin()
     sync_manager.start()
+    update_manager.start()
     logger.info("AdGuard Admin started")
     yield
+    await update_manager.stop()
     await sync_manager.stop()
 
 
@@ -197,6 +201,7 @@ app.include_router(filters.router)
 app.include_router(blocked_services.router)
 app.include_router(proxy.router)
 app.include_router(querylog.router)
+app.include_router(updates.router)
 
 
 @app.get("/api/health")

@@ -68,6 +68,27 @@ logged) instead of piling up.
 Database connections are never held while talking to an AdGuard instance, so a
 fleet of slow or unreachable servers cannot starve the API of connections.
 
+## Automatic updates
+
+Keeps the **AdGuard Home installations** current — see the [Updates guide](updates.md).
+Off per server by default: a server is only upgraded when its own **auto-update**
+flag is set *and* `AUTO_UPDATE_ENABLED` is true.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AUTO_UPDATE_ENABLED` | `true` | Master switch for the scheduler. `false` stops all automatic upgrades without touching per-server flags; the manual buttons still work. |
+| `AUTO_UPDATE_DEFAULT` | `false` | Value the auto-update flag takes for newly added and newly provisioned servers. |
+| `AUTO_UPDATE_INTERVAL_SECONDS` | `3600` | How often the updater looks for servers that are due. |
+| `AUTO_UPDATE_WINDOW` | _(empty)_ | Maintenance window as `HH:MM-HH:MM` in **UTC**; empty means any time. May wrap midnight (`23:00-02:00`). A malformed value is rejected at startup. |
+| `AUTO_UPDATE_RETRY_HOURS` | `6` | How long to wait before retrying a server whose upgrade failed (keyed on the target version). |
+| `AUTO_UPDATE_RESTART_TIMEOUT_SECONDS` | `300` | How long to wait for a server to come back on the new version before recording a failure. |
+| `AUTO_UPDATE_MAX_CONCURRENCY` | `1` | Servers upgraded at once. Deliberately 1 — an upgrade restarts AdGuard Home, and a whole fleet restarting together takes DNS down everywhere at the same moment. |
+
+An upgrade restarts AdGuard Home, so DNS on that server stops for a few seconds.
+Only bare-metal installs are upgraded from here; a container cannot replace its
+own image, so Docker hosts run an [on-box updater](updates.md#docker-servers-the-on-box-updater)
+instead. Reconciliation is locked out of a server while it is being upgraded.
+
 ## Embedded AdGuard UI proxy
 
 Renders a managed server's own AdGuard interface inside the admin SPA.

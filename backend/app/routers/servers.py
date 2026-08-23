@@ -6,6 +6,7 @@ from sqlmodel import select
 
 from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
+from ..config import settings
 from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
 from ..models import (
     BlockedService,
@@ -85,6 +86,11 @@ def create_server(payload: ServerCreate, _: RequireEditor, session: SessionDep):
         enabled=payload.enabled,
         prune=payload.prune,
         manage_upstreams=payload.manage_upstreams,
+        manage_filtering=payload.manage_filtering,
+        auto_update=(
+            settings.auto_update_default if payload.auto_update is None else payload.auto_update
+        ),
+        install_method=payload.install_method,
     )
     session.add(server)
     session.commit()

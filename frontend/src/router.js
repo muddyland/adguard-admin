@@ -10,6 +10,7 @@ import DnsSettings from './views/DnsSettings.vue'
 import Filtering from './views/Filtering.vue'
 import QueryLog from './views/QueryLog.vue'
 import Provision from './views/Provision.vue'
+import Updates from './views/Updates.vue'
 import Users from './views/Users.vue'
 
 const routes = [
@@ -21,6 +22,7 @@ const routes = [
   { path: '/dns-settings', name: 'dns-settings', component: DnsSettings },
   { path: '/filtering', name: 'filtering', component: Filtering },
   { path: '/query-log', name: 'query-log', component: QueryLog },
+  { path: '/updates', name: 'updates', component: Updates },
   { path: '/provision', name: 'provision', component: Provision, meta: { editor: true } },
   { path: '/users', name: 'users', component: Users, meta: { admin: true } },
 ]
