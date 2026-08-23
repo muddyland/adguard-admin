@@ -14,6 +14,12 @@ services:
       # UI and API share one origin now; default to the published port below.
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      # Automatic AdGuard Home updates. Per-server opt-in is still required.
+      AUTO_UPDATE_ENABLED: ${AUTO_UPDATE_ENABLED:-true}
+      AUTO_UPDATE_DEFAULT: ${AUTO_UPDATE_DEFAULT:-false}
+      AUTO_UPDATE_INTERVAL_SECONDS: ${AUTO_UPDATE_INTERVAL_SECONDS:-3600}
+      # Maintenance window, HH:MM-HH:MM UTC. Empty means any time.
+      AUTO_UPDATE_WINDOW: ${AUTO_UPDATE_WINDOW:-}
       # Public URL of this admin app, reachable by provisioned servers.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       PROVISION_TOKEN_TTL_HOURS: ${PROVISION_TOKEN_TTL_HOURS:-24}

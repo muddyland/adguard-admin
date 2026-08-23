@@ -15,6 +15,7 @@ const form = ref({})
 const error = ref('')
 const testResult = ref({})
 const syncingId = ref(null)
+const updatingId = ref(null)
 const msg = ref('')
 // Sorting (defaults to zone)
 const sortKey = ref('zone')
@@ -92,6 +93,7 @@ function openCreate() {
   editing.value = null
   form.value = { name: '', url: '', username: '', password: '', zone_id: null, enabled: true, prune: false,
                  manage_upstreams: false, manage_filtering: false,
+                 auto_update: false, install_method: null,
                  import_records: false, import_scope: 'global',
                  import_settings: false, import_settings_scope: 'global',
                  import_filtering: false, import_filtering_scope: 'global' }
@@ -102,7 +104,8 @@ function openEdit(s) {
   editing.value = s
   form.value = { name: s.name, url: s.url, username: s.username || '', password: '', zone_id: s.zone_id,
                  enabled: s.enabled, prune: s.prune, manage_upstreams: s.manage_upstreams,
-                 manage_filtering: s.manage_filtering }
+                 manage_filtering: s.manage_filtering, auto_update: s.auto_update,
+                 install_method: s.install_method }
   error.value = ''
   showModal.value = true
 }
@@ -250,6 +253,18 @@ async function sync(s) {
   finally { syncingId.value = null }
 }
 
+async function update(s) {
+  if (!confirm(`Update ${s.name} to AdGuard Home ${s.latest_version}? AdGuard restarts, briefly interrupting DNS on this server.`)) return
+  updatingId.value = s.id
+  try {
+    const { data } = await api.post(`/updates/${s.id}/run`)
+    msg.value = `${data.server_name}: ${data.message}`
+    await load()
+  } catch (e) {
+    msg.value = `Update failed: ${e.response?.data?.detail || 'unknown error'}`
+  } finally { updatingId.value = null }
+}
+
 function fmt(d) { return d ? new Date(d).toLocaleString() : '—' }
 
 onMounted(load)
@@ -288,9 +303,12 @@ onMounted(load)
             <td><ZoneBadge :id="s.zone_id" :label="zoneName(s.zone_id)" /></td>
             <td>
               <span class="mono">{{ s.version || '—' }}</span>
-              <a v-if="s.update_available" class="badge drift" style="margin-left:6px"
-                 :title="`Update available: ${s.latest_version}`"
-                 :href="s.url" target="_blank" rel="noopener">↑ {{ s.latest_version }}</a>
+              <router-link v-if="s.update_available" class="badge drift" style="margin-left:6px"
+                 :title="`Update available: ${s.latest_version}`" to="/updates">↑ {{ s.latest_version }}</router-link>
+              <span v-if="s.auto_update" class="badge global" style="margin-left:4px"
+                    :title="s.install_method === 'docker'
+                      ? 'Kept up to date by the on-box updater'
+                      : 'Kept up to date by AdGuard Admin'">auto-update</span>
             </td>
             <td>
               <span v-if="s.in_sync" class="badge synced">In sync</span>
@@ -311,6 +329,9 @@ onMounted(load)
                 <template v-if="auth.isEditor">
                   <button class="menu-item" :disabled="syncingId === s.id" @click="sync(s)">
                     {{ syncingId === s.id ? 'Syncing…' : 'Sync now' }}
+                  </button>
+                  <button class="menu-item" :disabled="!s.update_available || updatingId === s.id" @click="update(s)">
+                    {{ updatingId === s.id ? 'Updating…' : (s.update_available ? `Update to ${s.latest_version}` : 'No update available') }}
                   </button>
                   <button v-if="auth.isAdmin" class="menu-item" @click="openCreds(s)">Show credentials</button>
                   <div class="menu-divider"></div>
@@ -376,6 +397,23 @@ onMounted(load)
       <label for="manage-filtering" style="margin:0">Manage filtering (blocklists, allowlists &amp; blocked services)</label>
     </div>
     <div class="hint">When on, sync also applies the Filtering defined for this server's scope.</div>
+    <div class="form-row checkbox-row" style="margin-top:10px">
+      <input type="checkbox" id="auto-update" v-model="form.auto_update" />
+      <label for="auto-update" style="margin:0">Keep AdGuard Home up to date automatically</label>
+    </div>
+    <div class="form-row">
+      <label>How AdGuard Home is installed here</label>
+      <select v-model="form.install_method">
+        <option :value="null">— Unknown —</option>
+        <option value="docker">Docker container</option>
+        <option value="bare_metal">Bare-metal (native install)</option>
+      </select>
+      <div class="hint">
+        Decides who performs the upgrade. A bare-metal server is upgraded by this app over
+        AdGuard's control API; a container is upgraded by the on-box updater, because a
+        container can't replace its own image. See <router-link to="/updates">Updates</router-link>.
+      </div>
+    </div>
     <template v-if="!editing">
       <div class="form-row checkbox-row" style="margin-top:14px">
         <input type="checkbox" id="import-on-add" v-model="form.import_records" />

@@ -18,6 +18,7 @@ from .models import (
     RecordScope,
     Role,
     SyncStatus,
+    UpdateState,
 )
 
 
@@ -97,6 +98,14 @@ class ServerRead(BaseModel):
     prune: bool
     manage_upstreams: bool
     manage_filtering: bool
+    auto_update: bool
+    install_method: Optional[InstallMethod]
+    can_autoupdate: bool
+    update_check_disabled: bool
+    update_state: UpdateState
+    update_attempted_at: Optional[datetime]
+    update_completed_at: Optional[datetime]
+    update_error: Optional[str]
     status: SyncStatus
     version: Optional[str]
     latest_version: Optional[str]
@@ -122,6 +131,9 @@ class ServerCreate(BaseModel):
     prune: bool = False
     manage_upstreams: bool = False
     manage_filtering: bool = False
+    # None means "use AUTO_UPDATE_DEFAULT".
+    auto_update: Optional[bool] = None
+    install_method: Optional[InstallMethod] = None
 
     @field_validator("name")
     @classmethod
@@ -144,6 +156,8 @@ class ServerUpdate(BaseModel):
     prune: Optional[bool] = None
     manage_upstreams: Optional[bool] = None
     manage_filtering: Optional[bool] = None
+    auto_update: Optional[bool] = None
+    install_method: Optional[InstallMethod] = None
 
     @field_validator("name")
     @classmethod
@@ -363,6 +377,10 @@ class ProvisionRequest(BaseModel):
     http_port: Optional[int] = None
     https_port: Optional[int] = None
     prune: bool = False
+    # Keep AdGuard Home up to date on the new box. For a Docker install the
+    # script also installs the on-box updater; a bare-metal box is upgraded by
+    # this app over the control API. None means "use AUTO_UPDATE_DEFAULT".
+    auto_update: Optional[bool] = None
 
     @field_validator("name")
     @classmethod
@@ -389,6 +407,7 @@ class ProvisionTokenRead(BaseModel):
     name: str
     zone_id: Optional[int]
     method: InstallMethod
+    auto_update: bool
     ssl_enabled: bool
     connect_address: Optional[str]
     http_port: int
@@ -424,6 +443,53 @@ class ProvisionComplete(BaseModel):
         if v is None:
             return None
         return validate_port(v, field="port")
+
+
+# ---- Automatic updates ----
+class UpdateServerRead(BaseModel):
+    """One server's update posture, as shown on the Updates page."""
+    id: int
+    name: str
+    zone_id: Optional[int]
+    enabled: bool
+    status: SyncStatus
+    version: Optional[str]
+    latest_version: Optional[str]
+    update_available: bool
+    auto_update: bool
+    install_method: Optional[InstallMethod]
+    can_autoupdate: bool
+    update_check_disabled: bool
+    update_state: UpdateState
+    update_attempted_at: Optional[datetime]
+    update_completed_at: Optional[datetime]
+    update_error: Optional[str]
+    # Why this server would be skipped right now (None = it is due).
+    skip_reason: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateOverviewRead(BaseModel):
+    servers: list[UpdateServerRead]
+    enabled: bool                 # AUTO_UPDATE_ENABLED
+    window: str                   # "" = any time
+    in_window: bool
+    interval_seconds: int
+    retry_hours: int
+    last_run: Optional[datetime]
+    pass_in_progress: bool
+    docker_agent_command: str     # the one-liner for dockerised servers
+
+
+class UpdateOutcomeRead(BaseModel):
+    server_id: int
+    server_name: str
+    state: UpdateState
+    from_version: Optional[str]
+    to_version: Optional[str]
+    message: str
 
 
 # ---- Sync ----

@@ -68,6 +68,26 @@ class Settings(BaseSettings):
     # admin app didn't create. Can be toggled per-server.
     default_prune: bool = False
 
+    # --- Automatic AdGuard Home updates (see app.updater) ------------------ #
+    # Master switch. Even when on, a server is only upgraded if its own
+    # auto_update flag is set, so this never surprises an existing fleet.
+    auto_update_enabled: bool = True
+    # Default for the auto_update flag of newly added / provisioned servers.
+    auto_update_default: bool = False
+    # How often the updater looks for eligible servers.
+    auto_update_interval_seconds: int = 3600
+    # Maintenance window, "HH:MM-HH:MM" in UTC. Empty means any time. A window
+    # may wrap midnight (e.g. "23:00-02:00"). An upgrade restarts AdGuard Home,
+    # which briefly stops DNS resolution for everything behind it.
+    auto_update_window: str = ""
+    # How long to wait before retrying a server whose upgrade failed.
+    auto_update_retry_hours: int = 6
+    # How long to wait for a server to come back on the new version.
+    auto_update_restart_timeout_seconds: float = 300.0
+    # How many servers to upgrade at once. Deliberately 1: rolling one box at a
+    # time keeps the rest of the fleet resolving while one restarts.
+    auto_update_max_concurrency: int = 1
+
     # Login brute-force protection (in-process; see app.ratelimit).
     login_max_attempts: int = 10
     login_window_seconds: int = 300
@@ -116,6 +136,36 @@ class Settings(BaseSettings):
         return self.public_base_url.lower().startswith("https")
 
 
+def parse_window(value: str) -> tuple[int, int] | None:
+    """Parse "HH:MM-HH:MM" into minutes-since-midnight. None means "any time".
+
+    Raises ValueError on anything malformed, so a typo in AUTO_UPDATE_WINDOW is
+    caught at startup rather than silently disabling the window.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        start_s, end_s = text.split("-", 1)
+        start = _minutes(start_s)
+        end = _minutes(end_s)
+    except ValueError as exc:
+        raise ValueError(
+            f"{value!r} is not a time window of the form HH:MM-HH:MM (24h, UTC)"
+        ) from exc
+    if start == end:
+        raise ValueError(f"{value!r} is an empty window: start and end are the same time")
+    return start, end
+
+
+def _minutes(hhmm: str) -> int:
+    hours, minutes = hhmm.strip().split(":")
+    h, m = int(hours), int(minutes)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError(f"{hhmm!r} is not a valid 24h time")
+    return h * 60 + m
+
+
 def config_problems(s: Settings) -> list[str]:
     """Return a list of fatal misconfigurations. Empty means good to start.
 
@@ -162,6 +212,11 @@ def config_problems(s: Settings) -> list[str]:
             "CORS_ORIGINS contains '*', which cannot be combined with credentialed "
             "requests. List the exact origins instead."
         )
+
+    try:
+        parse_window(s.auto_update_window)
+    except ValueError as exc:
+        problems.append(f"AUTO_UPDATE_WINDOW is invalid: {exc}")
 
     if s.oidc_default_role not in VALID_ROLES:
         problems.append(

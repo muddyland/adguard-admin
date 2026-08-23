@@ -55,6 +55,15 @@ _ADDED_COLUMNS = {
         "latest_version": "TEXT",
         "update_available": "BOOLEAN DEFAULT 0",
         "cooldown_until": "TIMESTAMP",
+        "auto_update": "BOOLEAN DEFAULT 0",
+        "install_method": "TEXT",
+        "can_autoupdate": "BOOLEAN DEFAULT 0",
+        "update_check_disabled": "BOOLEAN DEFAULT 0",
+        "update_state": "TEXT DEFAULT 'idle'",
+        "update_attempted_at": "TIMESTAMP",
+        "update_attempted_version": "TEXT",
+        "update_completed_at": "TIMESTAMP",
+        "update_error": "TEXT",
     },
     "dnsrecord": {"zone_ids": "TEXT DEFAULT '[]'", "managed": "BOOLEAN DEFAULT 0"},
     "upstream": {"zone_ids": "TEXT DEFAULT '[]'", "kind": "TEXT DEFAULT 'upstream'"},
@@ -62,6 +71,7 @@ _ADDED_COLUMNS = {
     "provisioningtoken": {
         "config_fetched_at": "TIMESTAMP",
         "key_fetched_at": "TIMESTAMP",
+        "auto_update": "BOOLEAN DEFAULT 0",
     },
 }
 

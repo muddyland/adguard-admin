@@ -28,7 +28,8 @@ async function load() {
 
 function openForm() {
   form.value = { name: '', zone_id: null, method: 'docker', ssl_enabled: false,
-                 connect_address: '', http_port: null, https_port: null, prune: false }
+                 connect_address: '', http_port: null, https_port: null, prune: false,
+                 auto_update: false }
   error.value = ''
   result.value = null
   showForm.value = true
@@ -91,7 +92,10 @@ onMounted(load)
           <tr v-for="t in visibleTokens" :key="t.id">
             <td><strong>{{ t.name }}</strong></td>
             <td>{{ zoneName(t.zone_id) }}</td>
-            <td><span class="badge global">{{ t.method === 'docker' ? 'Docker' : 'Bare-metal' }}</span></td>
+            <td>
+              <span class="badge global">{{ t.method === 'docker' ? 'Docker' : 'Bare-metal' }}</span>
+              <span v-if="t.auto_update" class="badge synced" style="margin-left:4px" title="Auto-update enabled">auto-update</span>
+            </td>
             <td>{{ t.ssl_enabled ? '🔒 ' + t.connect_address : '—' }}</td>
             <td>
               <span v-if="t.status === 'completed'" class="badge synced">completed</span>
@@ -158,6 +162,21 @@ onMounted(load)
       <div class="form-row checkbox-row">
         <input type="checkbox" id="prune" v-model="form.prune" />
         <label for="prune" style="margin:0">Prune un-managed rewrites once managed</label>
+      </div>
+      <div class="form-row checkbox-row">
+        <input type="checkbox" id="auto-update" v-model="form.auto_update" />
+        <label for="auto-update" style="margin:0">Keep AdGuard Home up to date automatically</label>
+      </div>
+      <div class="hint">
+        <template v-if="form.method === 'docker'">
+          Installs an on-box updater (systemd timer) that pulls the image daily and recreates
+          the container, keeping its volumes and settings. A container can't replace its own image,
+          so this can't be driven from here.
+        </template>
+        <template v-else>
+          The admin app upgrades this server over AdGuard's own control API, on the schedule set
+          under <strong>Updates</strong>. Each upgrade restarts AdGuard Home.
+        </template>
       </div>
     </template>
 

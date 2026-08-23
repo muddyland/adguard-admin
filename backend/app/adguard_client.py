@@ -135,6 +135,17 @@ class AdGuardClient:
         """POST /control/version.json — returns {new_version, announcement, ...}."""
         return (await self._request("POST", "/control/version.json", json={"recheck_now": recheck})).json()
 
+    async def update_now(self) -> None:
+        """POST /control/update — begin AdGuard's own upgrade procedure.
+
+        The server downloads the new release, replaces its binary and restarts,
+        so the response often never arrives: the connection dies mid-reply. The
+        caller treats a transport error here as "probably restarting" and
+        confirms by polling for the new version. Only an HTTP status error means
+        the request was actually refused.
+        """
+        await self._request("POST", "/control/update", timeout=self.timeout * 3)
+
     async def query_log(self, params: dict) -> dict:
         """GET /control/querylog — recent DNS queries. Supports limit/search/response_status."""
         return (await self._request("GET", "/control/querylog", params=params)).json()

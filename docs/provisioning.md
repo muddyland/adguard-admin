@@ -14,6 +14,9 @@ setup wizard, no copying credentials around.
    - **TLS** — optionally issue a self-signed certificate so the new box serves its admin
      API over HTTPS. If enabled, you must give a **connect address** (FQDN or IP) the
      cert is bound to.
+   - **Auto-update** — keep AdGuard Home itself current on the new box. For a Docker
+     install the script also installs the [on-box updater](updates.md#docker-servers-the-on-box-updater);
+     a bare-metal box is upgraded by this app over AdGuard's control API.
 2. The app issues a **provisioning token** and shows a one-line command:
 
    ```bash
@@ -26,6 +29,7 @@ setup wizard, no copying credentials around.
    - configures it with a randomly generated admin password (stored encrypted in the
      admin DB — you never have to handle it),
    - applies TLS if you enabled it,
+   - installs the auto-updater if you asked for one (Docker only — see [Updates](updates.md)),
    - and **calls back** to register itself as a managed server.
 4. The token flips from **pending** to **completed**, a new entry appears on the
    [Servers](servers.md) page, and the reconciliation engine starts pushing your
