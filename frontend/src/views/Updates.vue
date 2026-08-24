@@ -17,8 +17,14 @@ const outdated = computed(() => servers.value.filter((s) => s.update_available))
 const managed = computed(() => servers.value.filter((s) => s.auto_update))
 const failed = computed(() => servers.value.filter((s) => s.update_state === 'failed'))
 // A server whose own version check is off never reports a new release, so it
-// looks up to date forever. Call that out rather than letting it hide.
-const checksOff = computed(() => servers.value.filter((s) => s.update_check_disabled))
+// looks up to date forever. Worth calling out — but only where the operator can
+// actually do something about it. The official AdGuard Docker image bakes
+// --no-check-update into its command, which overrides the config setting and
+// leaves it absent from the UI, so for containers this is the expected state and
+// the on-box updater is what keeps them current.
+const checksOff = computed(() =>
+  servers.value.filter((s) => s.update_check_disabled && s.install_method !== 'docker')
+)
 // Boxes this app cannot upgrade itself — they need the on-box updater.
 const delegated = computed(() =>
   servers.value.filter((s) => s.install_method === 'docker' || s.update_state === 'delegated')
@@ -146,6 +152,7 @@ onMounted(load)
       <div class="stat">
         <div class="value" :class="checksOff.length ? 'red' : ''">{{ checksOff.length }}</div>
         <div class="label">Update checks off</div>
+        <div class="hint">excluding Docker</div>
       </div>
     </div>
 
@@ -153,7 +160,8 @@ onMounted(load)
       {{ checksOff.length }} server(s) have AdGuard's own update check switched off, so they will
       never report a new release: {{ checksOff.map((s) => s.name).join(', ') }}. Turn on
       <strong>Automatically check for updates</strong> in each one's AdGuard Home settings
-      (Settings → General settings).
+      (Settings → General settings), or remove <span class="mono">--no-check-update</span> from
+      how it is started. Docker servers are excluded — see below.
     </div>
 
     <div v-if="!data.enabled" class="alert alert-error">
@@ -212,8 +220,13 @@ onMounted(load)
             <td class="mono">{{ s.version || '—' }}</td>
             <td>
               <span v-if="s.update_available" class="badge drift">↑ {{ s.latest_version }}</span>
+              <span v-else-if="s.update_check_disabled && s.install_method === 'docker'"
+                    class="badge global"
+                    title="The AdGuard Docker image runs with --no-check-update, so it cannot report releases. The on-box updater keeps it current.">
+                on-box updater
+              </span>
               <span v-else-if="s.update_check_disabled" class="badge offline"
-                    title="AdGuard Home → Settings → General settings → Automatically check for updates">
+                    title="AdGuard Home → Settings → General settings → Automatically check for updates (or a --no-check-update flag)">
                 checks disabled
               </span>
               <span v-else class="muted">up to date</span>
@@ -249,6 +262,13 @@ onMounted(load)
           reports that it cannot update itself and this app will not try. Run the on-box
           updater on those hosts instead — it pulls the image and recreates the container
           (keeping its volumes, ports and settings) on a daily timer.
+        </p>
+        <p>
+          The official image also starts AdGuard with <span class="mono">--no-check-update</span>,
+          which overrides the config setting, so these servers report no version information at
+          all and have no <em>Automatically check for updates</em> box in their own UI. Nothing to
+          fix: the updater below is what keeps them current, and their new version shows up here
+          on the next sync after it runs.
         </p>
         <pre class="mono" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;overflow-x:auto;font-size:13px;white-space:pre-wrap;word-break:break-all">{{ data.docker_agent_command }}</pre>
         <button class="btn btn-sm" style="margin-top:10px" @click="copyCommand">

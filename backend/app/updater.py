@@ -95,9 +95,11 @@ def skip_reason(server: Server, now: datetime) -> str | None:
         return "automatic updates are off for this server"
     if not server.update_available or not (server.latest_version or "").strip():
         if server.update_check_disabled:
+            if server.install_method == InstallMethod.docker:
+                return "kept current by the on-box updater; the container cannot report releases"
             return (
-                "this server's own update check is switched off, so it never reports "
-                "a new release (AdGuard Home → Settings → General settings)"
+                "this server's own update check is switched off, so it never reports a new "
+                "release (AdGuard Home → Settings → General settings, or a --no-check-update flag)"
             )
         return "already on the latest version"
 
@@ -260,9 +262,7 @@ async def update_server(server_id: int) -> UpdateOutcome | None:
                 # reporting it as up to date would hide a server stuck on an old
                 # release forever.
                 message = (
-                    "This server's update check is switched off, so it cannot report new "
-                    "releases. Turn on 'Automatically check for updates' in its AdGuard Home "
-                    "settings, or update it the way it was installed."
+                    _check_disabled_message(install_method)
                     if check_disabled
                     else "Already on the latest version."
                 )
@@ -346,6 +346,28 @@ async def update_server(server_id: int) -> UpdateOutcome | None:
             return outcome
         finally:
             await client.aclose()
+
+
+def _check_disabled_message(install_method: InstallMethod | None) -> str:
+    """Why this server never reports a new release, and whether that is a fault.
+
+    For a container it is neither a fault nor fixable: the official image bakes
+    `--no-check-update` into its command, which wins over `check_update` in the
+    config, so the setting is absent from its UI entirely. Telling those
+    operators to go and switch it on sends them looking for a control that does
+    not exist. The on-box updater is what keeps a container current anyway.
+    """
+    if install_method == InstallMethod.docker:
+        return (
+            "AdGuard Home in Docker ships with --no-check-update, so it never reports "
+            "new releases. That is expected and cannot be changed from its UI — the "
+            "on-box updater keeps the container up to date instead."
+        )
+    return (
+        "This server's update check is switched off, so it cannot report new releases. "
+        "Turn on 'Automatically check for updates' in its AdGuard Home settings, or — if "
+        "it is started with --no-check-update — remove that flag."
+    )
 
 
 def _delegated_message(install_method: InstallMethod | None, target: str) -> str:
