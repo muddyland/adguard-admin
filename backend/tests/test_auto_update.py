@@ -573,18 +573,20 @@ def test_auto_update_can_be_toggled_per_server(client, editor_headers, session):
 # --------------------------------------------------------------------------- #
 # A server whose own update check is off is not the same as an up-to-date one
 # --------------------------------------------------------------------------- #
+class ChecksOff(FakeClient):
+    """A server whose version check is off: AdGuard answers {"disabled": true}."""
+
+    async def version_check(self, recheck: bool = False):
+        return {"new_version": None, "can_autoupdate": None, "disabled": True}
+
+
 @pytest.mark.anyio
 async def test_disabled_update_check_is_reported_not_mistaken_for_current(
     session, monkeypatch, no_sleep
 ):
-    """AdGuard answers {"disabled": true} when its version check is switched off."""
     server = make_server(session, update_check_disabled=True)
-
-    class ChecksOff(FakeClient):
-        async def version_check(self, recheck: bool = False):
-            return {"new_version": None, "can_autoupdate": None, "disabled": True}
-
     use_client(monkeypatch, ChecksOff())
+
     outcome = await update_server(server.id)
 
     assert outcome.state == UpdateState.idle
@@ -595,12 +597,46 @@ async def test_disabled_update_check_is_reported_not_mistaken_for_current(
     assert server.update_error is None
 
 
+@pytest.mark.anyio
+async def test_docker_is_not_told_to_flip_a_switch_it_does_not_have(
+    session, monkeypatch, no_sleep
+):
+    """The official image bakes --no-check-update into its command.
+
+    That flag overrides `check_update` in the config, so the setting is absent
+    from the container's UI and cannot be turned on there at all. Advising it
+    sends operators looking for a control that does not exist; for a container
+    the disabled check is the expected state and the on-box updater is the
+    answer.
+    """
+    server = make_server(session, install_method=InstallMethod.docker,
+                         update_check_disabled=True)
+    use_client(monkeypatch, ChecksOff())
+
+    outcome = await update_server(server.id)
+
+    assert outcome.state == UpdateState.idle
+    assert "on-box updater" in outcome.message
+    assert "Automatically check for updates" not in outcome.message
+    assert "Settings" not in outcome.message
+
+
 def test_skip_reason_names_a_disabled_update_check(session):
     server = make_server(
         session, update_available=False, latest_version=None, update_check_disabled=True
     )
     reason = skip_reason(server, NOW)
     assert reason and "update check is switched off" in reason
+
+
+def test_skip_reason_for_docker_points_at_the_on_box_updater(session):
+    server = make_server(
+        session, update_available=False, latest_version=None,
+        update_check_disabled=True, install_method=InstallMethod.docker,
+    )
+    reason = skip_reason(server, NOW)
+    assert reason and "on-box updater" in reason
+    assert "Settings" not in reason
 
 
 def test_check_records_a_disabled_update_check(client, editor_headers, session, monkeypatch):

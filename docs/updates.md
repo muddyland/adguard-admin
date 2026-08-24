@@ -118,6 +118,13 @@ Each run:
 Your AdGuard configuration and statistics live in its **named volumes**, which
 are reused untouched — that is what makes recreating the container safe.
 
+Because the image runs with `--no-check-update`, a dockerised server reports no
+version information to this app at all — the Updates page shows **on-box updater**
+rather than a release number, and the new version appears after the updater has
+run and the next sync has picked it up. This is why the install method matters:
+it is what tells the app to expect that, instead of treating the silence as a
+server that has fallen behind.
+
 Run it by hand any time:
 
 ```bash
@@ -173,13 +180,22 @@ never reported a new version. Check the box before retrying; the app backs off
 for `AUTO_UPDATE_RETRY_HOURS`. Raise
 `AUTO_UPDATE_RESTART_TIMEOUT_SECONDS` for a slow host.
 
-**"This server's update check is switched off…" / the Updates page says *checks
-disabled*.** — AdGuard Home has its own *Automatically check for updates* setting
-(Settings → General settings), and some builds ship with it off. When it is off,
-`version.json` answers `{"disabled": true}` and the server never reports a new
-release — which is not the same as being current, so the app says so instead of
-showing it as up to date. Turn the setting on, or update that server the way it
-was installed.
+**The Updates page says *checks disabled*.** — AdGuard Home has its own
+*Automatically check for updates* setting (Settings → General settings). When it
+is off, `version.json` answers `{"disabled": true}` and the server never reports
+a new release — which is not the same as being current, so the app says so rather
+than showing it as up to date. Turn the setting on, or remove `--no-check-update`
+from however that server is started.
+
+**A Docker server shows *on-box updater* and no version information.** — Expected,
+and there is nothing to switch on. The official image starts AdGuard Home with
+`--no-check-update`, and that flag **overrides `check_update` in the config**, so
+the setting is absent from that server's UI and writing it into `AdGuardHome.yaml`
+has no effect (AdGuard drops the key on the next restart). It is deliberate:
+a container cannot replace its own image, so the version check would only ever
+report an upgrade it could not perform. The [on-box updater](#docker-servers-the-on-box-updater)
+keeps the container current, and its new version appears here on the next sync
+after the updater runs.
 
 **A server keeps showing an update that never installs.** — Check its install
 method. A Docker server without the on-box updater sits at **on-box updater**
