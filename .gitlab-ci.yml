@@ -4,73 +4,60 @@ stages:
   - security
   - build
 
-# ── Package registry ──────────────────────────────────────────────────────
-# Installs can go through the internal caching registry, which proxies upstream
-# PyPI/npm and enforces the CVE block policy. It is **opt-in and off by
-# default**, so a clone without access to it still gets a green pipeline.
+# ── Two instances ─────────────────────────────────────────────────────────
+# This file runs unchanged on both the internal GitLab and the public mirror.
 #
-# To turn it on, set these in Settings → CI/CD → Variables:
-#
-#   MINIREG_ENABLED=true   the switch; nothing below happens without it
-#   MINIREG_URL            registry base URL
-#   MINIREG_TOKEN          token for the registry CLI (mask it)
-#   MINIREG_IP             optional — pins /etc/hosts where the runner cannot
-#                          resolve the internal DNS zone
-#
-# The registry address is deliberately not in this file. PIP_INDEX_URL and
-# NPM_CONFIG_REGISTRY are *derived* from MINIREG_URL below rather than set as
-# variables of their own, so the flag is the only thing that decides where
-# packages come from — setting them directly would bypass it silently.
+# Nothing here names an internal host or service. Where packages come from is
+# decided by PIP_INDEX_URL and NPM_CONFIG_REGISTRY, which pip and npm read
+# themselves, so internally they resolve through the caching registry and on
+# the mirror from PyPI and npmjs, with no difference in this file. That
+# replaces the opt-in switch and the URL-derivation that used to live here:
+# nothing has to be derived if the tools read the variables themselves.
 #
 # The npm lockfile keeps upstream registry.npmjs.org URLs on purpose: npm's
 # default replace-registry-host=npmjs rewrites them to whichever registry is
-# configured, so one lockfile works both inside and outside the network.
+# configured, so one lockfile works in both places.
+include:
+  - project: $CI_TEMPLATES
+    ref: main
+    file: /audit.yml
+    rules:
+      - if: $CI_TEMPLATES
 
-.use_minireg: &use_minireg |
-  if [ "${MINIREG_ENABLED:-false}" = "true" ]; then
-    if [ -z "${MINIREG_URL:-}" ]; then
-      echo "MINIREG_ENABLED=true but MINIREG_URL is unset — refusing to fall back"
-      echo "to the public registries silently, since that would skip the CVE policy."
-      exit 1
-    fi
-    export REG_HOST=$(echo "$MINIREG_URL" | sed -E 's#^https?://([^/:]+).*#\1#')
-    if [ -n "${MINIREG_IP:-}" ]; then
-      echo "$MINIREG_IP $REG_HOST" >> /etc/hosts
-    fi
-    export PIP_INDEX_URL="${MINIREG_URL%/}/pypi/simple/"
-    export NPM_CONFIG_REGISTRY="${MINIREG_URL%/}/npm/"
-    echo "packages: internal registry ($REG_HOST)"
-  else
-    echo "packages: public registries (MINIREG_ENABLED is not true)"
-  fi
+variables:
+  # Plain images by default. The internal group overrides these to pull
+  # through its dependency proxy; a mirror needs no such thing.
+  PYTHON_IMAGE: "python:3.12-slim"
+  NODE_IMAGE: "node:22-alpine"
+  # Client and daemon pinned to the same published release. There is no
+  # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
+  # previous pin failed at image pull, not at anything in the build.
+  DOCKER_IMAGE: "docker:29.7.2"
 
 # ── Shared bases ──────────────────────────────────────────────────────────
 
 .python_base:
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   tags: [saas-linux-small-amd64]
   before_script:
-    - *use_minireg
     # requirements-dev pins pip itself to a patched release; upgrade first so
     # the resolver doing the work is the version we asked for.
     - pip install --quiet --upgrade "pip>=26.2"
     - pip install --quiet -r backend/requirements-dev.txt
 
 .node_base:
-  image: node:22-alpine
+  image: $NODE_IMAGE
   tags: [saas-linux-small-amd64]
   before_script:
-    - *use_minireg
     - cd frontend && npm ci
 
 # ── Lint ──────────────────────────────────────────────────────────────────
 
 lint:backend:
   stage: lint
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   tags: [saas-linux-small-amd64]
   before_script:
-    - *use_minireg
     - pip install --quiet ruff==0.14.4
   script:
     - cd backend && ruff check app tests
@@ -139,54 +126,36 @@ build:frontend:
 
 security:pip-audit:
   stage: security
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   tags: [saas-linux-small-amd64]
   before_script:
-    - *use_minireg
     - pip install --quiet --upgrade "pip>=26.2"
     - pip install --quiet pip-audit==2.9.0
   script:
-    # pip-audit resolves through minireg but takes its advisories from PyPI/OSV,
-    # so pointing the index inward does not blind it.
+    # pip-audit resolves through whichever index is configured but takes its
+    # advisories from PyPI/OSV, so pointing the index inward does not blind
+    # it. It runs in both places.
     - pip-audit --requirement backend/requirements.txt --strict --desc
 
-# The npm side is audited by whichever tool can actually see advisories for the
-# registry in use:
+# npm audit asks the *configured registry* for advisories. Pointed at a
+# private mirror that does not serve them, it reports "found 0
+# vulnerabilities" for a tree the public registry flags as high -- a gate that
+# cannot fail, which is worse than no gate.
 #
-#   * Against the public registry, `npm audit` works as before.
-#   * Against the internal one it does NOT. `npm audit` asks the *configured
-#     registry* for advisories, and minireg does not serve npm's bulk-advisory
-#     endpoint — so it reports "found 0 vulnerabilities" for a tree the public
-#     registry flags as high. A gate that cannot fail is worse than no gate, so
-#     that case uses the registry's own scanner, which reads the same lockfile
-#     and does find them.
-#
-# Both fail at moderate/medium and above; exactly one runs per pipeline.
-
-security:npm-audit:public:
+# So it runs only where npm is pointed at the public registry. Where it is
+# not, the dependency audit above reads the same lockfile against the
+# registry's own advisory data and does find them.
+security:npm-audit:
   stage: security
-  image: node:22-alpine
+  image: $NODE_IMAGE
   tags: [saas-linux-small-amd64]
   rules:
-    - if: '$MINIREG_ENABLED != "true"'
+    - if: $NPM_CONFIG_REGISTRY
+      when: never
+    - when: on_success
   script:
     - cd frontend
     - npm audit --audit-level=moderate
-
-security:npm-audit:minireg:
-  stage: security
-  image: python:3.12-slim
-  tags: [saas-linux-small-amd64]
-  rules:
-    - if: '$MINIREG_ENABLED == "true"'
-  before_script:
-    - *use_minireg
-    - apt-get update -qq && apt-get install -y -qq curl
-    - curl -fsSL "${MINIREG_URL%/}/api/cli/install.sh" | sh
-  script:
-    - export PATH="$HOME/.local/bin:$PATH"
-    # The CLI reads MINIREG_URL / MINIREG_TOKEN from the environment.
-    - minireg audit frontend --fail-on medium
 
 security:osv-scanner:
   stage: security
@@ -207,26 +176,34 @@ build:image:
   # Client and daemon pinned to the same published release. There is no
   # docker:28.6.0 on Docker Hub — the 28 line stops at 28.3.3 — so the previous
   # pin failed at image pull, not at anything in the build.
-  image: docker:29.7.2
-  services: [docker:29.7.2-dind]
+  image: $DOCKER_IMAGE
+  services:
+    # Explicit alias: GitLab derives a service's hostname from its image name,
+    # so a registry prefix on DOCKER_IMAGE would move it away from "docker".
+    - name: $DOCKER_IMAGE-dind
+      alias: docker
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
-    - *use_minireg
     - until docker info; do sleep 1; done
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
-    # Pass the registry through as build args, and pin DNS for the build
-    # container when the runner needs it. Unset, the Dockerfile's public
-    # defaults apply.
+    # Pass whichever index is configured through to the build. Unset, the
+    # Dockerfile's public defaults apply, which is the case on a mirror.
+    #
+    # DOCKER_BUILD_ADD_HOST ("host:ip") pins a name for the build container.
+    # The dind daemon is a separate container from this job, so it can need a
+    # mapping even where the job itself resolves fine.
     - |
       BUILD_ARGS=""
       if [ -n "${PIP_INDEX_URL:-}" ]; then
         BUILD_ARGS="$BUILD_ARGS --build-arg PIP_INDEX_URL=$PIP_INDEX_URL"
+      fi
+      if [ -n "${NPM_CONFIG_REGISTRY:-}" ]; then
         BUILD_ARGS="$BUILD_ARGS --build-arg NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY"
       fi
-      if [ -n "${MINIREG_IP:-}" ] && [ -n "${REG_HOST:-}" ]; then
-        BUILD_ARGS="$BUILD_ARGS --add-host $REG_HOST:$MINIREG_IP"
+      if [ -n "${DOCKER_BUILD_ADD_HOST:-}" ]; then
+        BUILD_ARGS="$BUILD_ARGS --add-host $DOCKER_BUILD_ADD_HOST"
       fi
       docker build $BUILD_ARGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
     - IMAGE=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
