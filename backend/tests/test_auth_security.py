@@ -5,7 +5,12 @@ import pytest
 
 from app.config import settings
 from app.models import Role, User
-from app.routers.auth import _resolve_oidc_user, login_limiter
+from app.routers.auth import (
+    _claim_groups,
+    _in_admin_group,
+    _resolve_oidc_user,
+    login_limiter,
+)
 from app.ratelimit import RateLimiter
 from tests.conftest import make_user
 
@@ -215,3 +220,69 @@ def test_alg_none_token_is_rejected(client, admin_user):
     forged = jwt.encode({"sub": str(admin_user.id)}, key="", algorithm="none")
     resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged}"})
     assert resp.status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# OIDC group -> role mapping (provider-agnostic; Kanidm sends SPNs)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("raw,expected", [
+    (None, []),
+    ([], []),
+    (["a", "b"], ["a", "b"]),
+    (["  a  ", "", "b"], ["a", "b"]),
+    # Some providers send one delimited string rather than an array.
+    ("a,b", ["a", "b"]),
+    ("a b", ["a", "b"]),
+    ("a, b", ["a", "b"]),
+    # Anything that isn't a name is dropped rather than stringified.
+    ([{"name": "a"}, 7, "b"], ["b"]),
+    (42, []),
+])
+def test_claim_groups_normalisation(raw, expected):
+    assert _claim_groups(raw) == expected
+
+
+@pytest.mark.parametrize("configured,groups,expected", [
+    # Bare name, bare claim — the Authentik shape.
+    ("adguard-admins", ["adguard-admins"], True),
+    # Bare name against Kanidm's SPNs (plus the UUIDs it also sends).
+    ("adguard-admins", ["adguard-admins@idm.example.com", "e3a1-..."], True),
+    # A configured SPN is matched whole: same name, different realm must not pass.
+    ("adguard-admins@idm.example.com", ["adguard-admins@idm.example.com"], True),
+    ("adguard-admins@idm.example.com", ["adguard-admins@evil.example.com"], False),
+    ("adguard-admins@idm.example.com", ["adguard-admins"], False),
+    # Unset means nobody is promoted, whatever the IdP sends.
+    ("", ["adguard-admins"], False),
+    ("adguard-admins", [], False),
+])
+def test_admin_group_matching(monkeypatch, configured, groups, expected):
+    monkeypatch.setattr(settings, "oidc_admin_group", configured)
+    assert _in_admin_group(groups) is expected
+
+
+@pytest.mark.parametrize("groups", [
+    ["not-adguard-admins"],
+    ["adguard-admins-readonly"],
+    "not-adguard-admins",
+    ["adguard-admins-x@idm.example.com"],
+])
+def test_admin_group_is_never_a_substring_match(monkeypatch, groups):
+    """A substring test would make 'adguard-admins' match 'not-adguard-admins'."""
+    monkeypatch.setattr(settings, "oidc_admin_group", "adguard-admins")
+    assert _in_admin_group(_claim_groups(groups)) is False
+
+
+# --------------------------------------------------------------------------- #
+# The SSO button's name is operator-configurable
+# --------------------------------------------------------------------------- #
+def test_auth_config_reports_the_configured_provider_name(client, monkeypatch):
+    monkeypatch.setattr(settings, "oidc_display_name", "Kanidm")
+    body = client.get("/api/auth/config").json()
+    assert body["oidc_display_name"] == "Kanidm"
+    assert body["oidc_label"] == "Sign in with Kanidm"
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_blank_provider_name_falls_back_to_a_generic_label(monkeypatch, name):
+    monkeypatch.setattr(settings, "oidc_display_name", name)
+    assert settings.oidc_button_label == "Sign in with SSO"

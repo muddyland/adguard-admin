@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Annotated
 
 from authlib.integrations.starlette_client import OAuthError
@@ -85,17 +86,56 @@ def me(user: CurrentUser):
 @router.get("/config")
 def auth_config():
     """Public endpoint so the SPA can decide whether to show the OIDC button."""
-    return {"oidc_enabled": oidc_configured(), "oidc_label": "Sign in with Authentik"}
+    return {
+        "oidc_enabled": oidc_configured(),
+        "oidc_label": settings.oidc_button_label,
+        "oidc_display_name": settings.oidc_display_name,
+    }
 
 
 # --------------------------------------------------------------------------- #
-# OIDC (Authentik)
+# OIDC
 # --------------------------------------------------------------------------- #
 @router.get("/oidc/login")
 async def oidc_login(request: Request):
     if not oidc_configured():
         raise HTTPException(status_code=404, detail="OIDC not configured")
-    return await oauth.authentik.authorize_redirect(request, settings.oidc_redirect_uri)
+    return await oauth.oidc.authorize_redirect(request, settings.oidc_redirect_uri)
+
+
+def _claim_groups(raw) -> list[str]:
+    """Normalise whatever the provider put in the `groups` claim into names.
+
+    Most providers send a JSON array; some send one delimited string. Splitting
+    that string keeps matching *exact* — a plain substring test would make
+    OIDC_ADMIN_GROUP="admins" match a group called "not-admins".
+    """
+    if isinstance(raw, str):
+        return [g for g in re.split(r"[,\s]+", raw) if g]
+    if isinstance(raw, (list, tuple)):
+        return [g.strip() for g in raw if isinstance(g, str) and g.strip()]
+    return []
+
+
+def _in_admin_group(groups: list[str]) -> bool:
+    """True when OIDC_ADMIN_GROUP names one of the groups the IdP sent.
+
+    Kanidm identifies groups by SPN ("adguard-admins@idm.example.com") and also
+    sends their UUIDs, so an operator who configured the bare name would never
+    match. A bare name therefore also matches an SPN's local part; a configured
+    SPN is compared whole, so "ops@a.example.com" never matches
+    "ops@b.example.com". Matching stays case-sensitive and exact per component.
+    """
+    wanted = settings.oidc_admin_group.strip()
+    if not wanted:
+        return False
+    wanted_is_bare = "@" not in wanted
+    for group in groups:
+        if group == wanted:
+            return True
+        if wanted_is_bare and group.split("@", 1)[0] == wanted:
+            return True
+    return False
 
 
 def _resolve_oidc_user(session, sub: str, username: str, email: str | None) -> User | None:
@@ -138,7 +178,7 @@ async def oidc_callback(request: Request, session: SessionDep):
     if not oidc_configured():
         raise HTTPException(status_code=404, detail="OIDC not configured")
     try:
-        token = await oauth.authentik.authorize_access_token(request)
+        token = await oauth.oidc.authorize_access_token(request)
     except OAuthError as exc:
         raise HTTPException(status_code=400, detail=f"OIDC error: {exc.error}")
 
@@ -151,9 +191,9 @@ async def oidc_callback(request: Request, session: SessionDep):
     # is self-asserted and must not become an identity we key anything on.
     email = claims.get("email") if claims.get("email_verified") else None
     username = claims.get("preferred_username") or email or sub
-    groups = claims.get("groups") or []
+    groups = _claim_groups(claims.get("groups"))
 
-    is_admin_group = bool(settings.oidc_admin_group and settings.oidc_admin_group in groups)
+    is_admin_group = _in_admin_group(groups)
 
     user = _resolve_oidc_user(session, sub, username, email)
 
