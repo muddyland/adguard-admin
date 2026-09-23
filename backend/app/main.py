@@ -14,6 +14,7 @@ from .config import config_problems, settings
 from .database import engine, init_db
 from .deps import CurrentUser
 from .models import DNSRecord, Role, Server, SyncStatus, User, Zone
+from .oidc import oidc_configured
 from .routers import (
     auth,
     blocked_services,
@@ -102,10 +103,33 @@ def warn_about_ui_proxy_isolation() -> None:
     )
 
 
+def log_oidc_configuration() -> None:
+    """Say what was negotiated, so a provider swap is diagnosable from the log."""
+    if not oidc_configured():
+        return
+    logger.info(
+        "OIDC enabled: issuer=%s client_id=%s pkce=%s scopes=%r label=%r",
+        settings.oidc_issuer,
+        settings.oidc_client_id,
+        "S256" if settings.oidc_pkce else "off",
+        settings.oidc_scopes,
+        settings.oidc_button_label,
+    )
+    if settings.oidc_admin_group and "groups" not in settings.oidc_scopes.split():
+        logger.warning(
+            "OIDC_ADMIN_GROUP=%r is set but OIDC_SCOPES does not request 'groups'. "
+            "Some providers (Kanidm) only emit the groups claim for that scope, and "
+            "nobody will be promoted to admin. Others (Authentik) fold groups into "
+            "'profile' and need no change.",
+            settings.oidc_admin_group,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_configuration()
     warn_about_ui_proxy_isolation()
+    log_oidc_configuration()
     init_db()
     bootstrap_admin()
     sync_manager.start()

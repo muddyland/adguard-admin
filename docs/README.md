@@ -20,7 +20,7 @@ out to every server — and keep them that way.
 | [Provisioning](provisioning.md) | One-line install of brand-new AdGuard servers |
 | [Updates](updates.md) | Keeping the AdGuard Home containers and binaries themselves current |
 | [Dashboard & query log](dashboard-and-query-log.md) | Fleet-wide metrics and a combined, searchable query log |
-| [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC / Authentik login |
+| [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC single sign-on |
 | [Configuration reference](configuration.md) | Every environment variable |
 
 ## The 30-second version

@@ -35,7 +35,7 @@ server comes back online.
 - **Dashboard metrics** — combined query/blocked stats across the fleet, filterable by
   zone and server.
 - **Users & RBAC** — `admin` / `editor` / `viewer` roles.
-- **OIDC / Authentik** — single sign-on alongside local accounts.
+- **OIDC single sign-on** — any OpenID Connect provider, alongside local accounts.
 - **Stack** — single-container FastAPI + SQLModel backend serving a Vue 3 SPA styled
   after AdGuard Home.
 
@@ -65,7 +65,7 @@ Full guides live in [`docs/`](docs/README.md):
 | [Provisioning](docs/provisioning.md) | One-line install of new AdGuard servers |
 | [Updates](docs/updates.md) | Keeping the AdGuard Home containers/binaries themselves up to date |
 | [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
-| [Users & SSO](docs/users-and-sso.md) | Roles and OIDC / Authentik login |
+| [Users & SSO](docs/users-and-sso.md) | Roles and OIDC single sign-on |
 | [Configuration reference](docs/configuration.md) | Every environment variable |
 
 ## How the source-of-truth model works
@@ -158,10 +158,14 @@ is configured, so one lockfile works inside and outside the network.
 
 ## OIDC / SSO
 
-AdGuard Admin supports OpenID Connect single sign-on (tested with Authentik) alongside
-local accounts, with optional group→role mapping. See
+AdGuard Admin supports OpenID Connect single sign-on alongside local accounts,
+with optional group→role mapping. The client is provider-agnostic — only the
+issuer and client credentials are configured, everything else comes from the
+provider's discovery document — and is tested with Kanidm and Authentik.
+`OIDC_DISPLAY_NAME` sets the name on the login button. See
 [Users & SSO](docs/users-and-sso.md) for the full setup, and the
-[configuration reference](docs/configuration.md#oidc--authentik) for every variable.
+[configuration reference](docs/configuration.md#oidc-single-sign-on) for every
+variable.
 
 ## Security notes
 

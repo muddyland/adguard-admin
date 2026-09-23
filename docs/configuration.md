@@ -137,21 +137,25 @@ The public URL must be reachable by the servers you [provision](provisioning.md)
 Setting `PUBLIC_BASE_URL` to an `https://` URL also marks cookies `Secure` and
 enables HSTS.
 
-## OIDC / Authentik
+## OIDC single sign-on
 
-All optional; OIDC is off unless `OIDC_ENABLED=true` and an issuer is set. See
+All optional; OIDC is off unless `OIDC_ENABLED=true` and an issuer is set. The
+client is provider-agnostic — everything past the issuer and the client
+credentials comes from the discovery document. See
 [Users & SSO](users-and-sso.md).
 
 | Variable | Default | Notes |
 |---|---|---|
 | `OIDC_ENABLED` | `false` | Master switch for SSO. |
-| `OIDC_ISSUER` | _(empty)_ | e.g. `https://authentik.example.com/application/o/<app-slug>/`. |
+| `OIDC_ISSUER` | _(empty)_ | Kanidm: `https://idm.example.com/oauth2/openid/<client-id>`. Authentik: `https://authentik.example.com/application/o/<app-slug>/`. |
 | `OIDC_CLIENT_ID` | _(empty)_ | OAuth2 client ID. |
-| `OIDC_CLIENT_SECRET` | _(empty)_ | OAuth2 client secret. |
-| `OIDC_SCOPES` | `openid email profile` | Requested scopes. |
-| `OIDC_REDIRECT_URI` | `http://localhost:8000/api/auth/oidc/callback` | Must match the IdP provider config. |
+| `OIDC_CLIENT_SECRET` | _(empty)_ | OAuth2 client secret. Sent as HTTP Basic, which Kanidm requires. |
+| `OIDC_DISPLAY_NAME` | `SSO` | Provider name on the login button: `Kanidm` gives "Sign in with Kanidm". Cosmetic. |
+| `OIDC_SCOPES` | `openid email profile` | Requested scopes. Add `groups` if you use `OIDC_ADMIN_GROUP` and your provider gates the claim behind it (Kanidm does; Authentik folds groups into `profile`). |
+| `OIDC_PKCE` | `true` | Send an S256 PKCE challenge. Kanidm rejects the authorization request without one. Turn off only for a provider that chokes on it. |
+| `OIDC_REDIRECT_URI` | `http://localhost:8000/api/auth/oidc/callback` | Must match the IdP client config. |
 | `OIDC_DEFAULT_ROLE` | `viewer` | Role for first-time SSO users. Validated at startup. |
-| `OIDC_ADMIN_GROUP` | _(empty)_ | Members of this IdP group become admins. |
+| `OIDC_ADMIN_GROUP` | _(empty)_ | Members of this IdP group become admins. Matched exactly against each entry of the `groups` claim; a bare name also matches a Kanidm SPN (`adguard-admins` ≡ `adguard-admins@idm.example.com`). Promotes only — it never demotes. |
 | `OIDC_ALLOW_USERNAME_LINKING` | `false` | Let an OIDC identity adopt a pre-existing local account with a matching username. Off by default: many IdPs let users choose their own `preferred_username`, which would allow claiming someone else's account. Even when enabled, an account that has a local password is never adopted. |
 
 Only an email the provider marked `email_verified` is trusted; an unverified

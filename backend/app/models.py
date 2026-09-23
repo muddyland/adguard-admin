@@ -81,7 +81,7 @@ class User(SQLModel, table=True):
     hashed_password: Optional[str] = None  # null for OIDC-only accounts
     role: Role = Field(default=Role.viewer)
     is_active: bool = True
-    # Subject claim from the OIDC provider (Authentik), links external identity.
+    # Subject claim from the OIDC provider; links the external identity.
     oidc_sub: Optional[str] = Field(default=None, index=True, unique=True)
     created_at: datetime = Field(default_factory=utcnow)
 

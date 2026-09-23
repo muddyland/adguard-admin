@@ -102,19 +102,32 @@ class Settings(BaseSettings):
     ui_proxy_enabled: bool = True
     proxy_token_ttl_minutes: int = 60
 
-    # OIDC / Authentik (all optional — OIDC is disabled unless issuer is set)
+    # OIDC (all optional — OIDC is disabled unless issuer is set). Nothing here
+    # is provider-specific: everything past the issuer and the client
+    # credentials comes out of the provider's discovery document.
     oidc_enabled: bool = False
-    oidc_issuer: str = ""  # e.g. https://authentik.example.com/application/o/adguard-admin/
+    oidc_issuer: str = ""  # e.g. https://idm.example.com/oauth2/openid/adguard-admin
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
+    # Name of your identity provider, shown on the login button ("Sign in with
+    # Kanidm"). Purely cosmetic.
+    oidc_display_name: str = "SSO"
+    # Kanidm only emits the `groups` claim when the `groups` scope is asked for;
+    # Authentik folds groups into `profile`. Add `groups` here if you use
+    # OIDC_ADMIN_GROUP and your provider needs it.
     oidc_scopes: str = "openid email profile"
-    # Where Authentik redirects back to — must match the provider config.
+    # Send a PKCE (S256) challenge on the authorization request. Kanidm rejects
+    # the request without one. Harmless everywhere else, so it is on by default;
+    # turn it off only for a provider that chokes on the extra parameters.
+    oidc_pkce: bool = True
+    # Where the provider redirects back to — must match the client config.
     oidc_redirect_uri: str = "http://localhost:8000/api/auth/oidc/callback"
     # After login the user is bounced back to the SPA here.
     frontend_url: str = "http://localhost:5173"
     # Users who sign in via OIDC for the first time get this role.
     oidc_default_role: str = "viewer"
-    # Optional Authentik group whose members become admins.
+    # Optional provider group whose members become admins. Kanidm names groups
+    # by SPN ("adguard-admins@idm.example.com"); either form works here.
     oidc_admin_group: str = ""
     # Adopt a pre-existing local account when the OIDC username matches it. Off
     # by default: if the IdP lets users choose their own preferred_username,
@@ -129,6 +142,11 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def oidc_button_label(self) -> str:
+        """Label for the SPA's SSO button, e.g. "Sign in with Kanidm"."""
+        return f"Sign in with {self.oidc_display_name.strip() or 'SSO'}"
 
     @property
     def secure_cookies(self) -> bool:

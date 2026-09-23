@@ -18,7 +18,7 @@ export const useAuth = defineStore('auth', {
       try {
         const { data } = await api.get('/auth/config')
         this.oidcEnabled = data.oidc_enabled
-        this.oidcLabel = data.oidc_label
+        this.oidcLabel = data.oidc_label || this.oidcLabel
       } catch { /* ignore */ }
     },
     setToken(token) {
