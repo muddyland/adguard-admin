@@ -3,7 +3,12 @@
 
 # pytest >=9.0.3 fixes CVE-2025-71176
 pytest==9.0.3
-anyio==4.11.0
+# anyio >=4.14.2 fixes CVE-2026-63374 (CVSS 9.1 — TLSStream encodes host names
+# with IDNA 2003, so a look-alike name can pass certificate verification) and
+# CVE-2026-64847 (process-pool workers block on undrained stderr). Every release
+# up to 4.14.1 is affected, and minireg blocks all of them, so 4.11.0 could not
+# be installed at all.
+anyio==4.14.2
 ruff==0.14.4
 # Dependency vulnerability scanning, wired into CI.
 pip-audit==2.9.0

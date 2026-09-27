@@ -136,6 +136,13 @@ security:pip-audit:
     # advisories from PyPI/OSV, so pointing the index inward does not blind
     # it. It runs in both places.
     - pip-audit --requirement backend/requirements.txt --strict --desc
+    # The dev file too. It used to be left out, on the reasoning that test
+    # tooling never ships -- but the tooling is installed by the job above, so a
+    # blocked release there breaks the pipeline at `pip install` with a
+    # resolution error that says nothing about the advisory behind it. That is
+    # how anyio==4.11.0 (CVE-2026-63374, CVSS 9.1) was found: by the install
+    # failing, not by this gate.
+    - pip-audit --requirement backend/requirements-dev.txt --strict --desc
 
 # npm audit asks the *configured registry* for advisories. Pointed at a
 # private mirror that does not serve them, it reports "found 0
