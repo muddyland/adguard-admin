@@ -16,31 +16,13 @@ from ..certs import verify_for
 from ..config import settings
 from ..database import engine
 from ..deps import CurrentUser
+from ..fleet import as_number as _as_number, blocked_total as _blocked
 from ..models import Server
 from ..security import decrypt_secret
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
 logger = logging.getLogger("adguard_admin.metrics")
-
-
-def _blocked(s: dict) -> float:
-    return (
-        _as_number(s.get("num_blocked_filtering", 0))
-        + _as_number(s.get("num_replaced_safebrowsing", 0))
-        + _as_number(s.get("num_replaced_parental", 0))
-        + _as_number(s.get("num_replaced_safesearch", 0))
-    )
-
-
-def _as_number(value) -> float:
-    """Coerce a stat to a number, tolerating whatever an AdGuard build sends."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
-    return value
 
 
 def _merge_top(lists: list, limit: int = 10) -> list[dict]:

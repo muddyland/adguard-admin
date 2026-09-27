@@ -36,6 +36,9 @@ server comes back online.
   zone and server.
 - **Users & RBAC** — `admin` / `editor` / `viewer` roles.
 - **OIDC single sign-on** — any OpenID Connect provider, alongside local accounts.
+- **Home Assistant** — an AdGuard-compatible `/control` API means Home Assistant's
+  *built-in* AdGuard integration can point at this app and drive the whole fleet as
+  one device. No custom component, no HACS.
 - **Stack** — single-container FastAPI + SQLModel backend serving a Vue 3 SPA styled
   after AdGuard Home.
 
@@ -66,6 +69,7 @@ Full guides live in [`docs/`](docs/README.md):
 | [Updates](docs/updates.md) | Keeping the AdGuard Home containers/binaries themselves up to date |
 | [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
 | [Users & SSO](docs/users-and-sso.md) | Roles and OIDC single sign-on |
+| [Home Assistant](docs/home-assistant.md) | Driving the fleet from Home Assistant's built-in AdGuard integration |
 | [Configuration reference](docs/configuration.md) | Every environment variable |
 
 ## How the source-of-truth model works

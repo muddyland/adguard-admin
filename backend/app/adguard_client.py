@@ -197,6 +197,52 @@ class AdGuardClient:
         await self._request("POST", "/control/filtering/set_url",
                             json={"url": url, "whitelist": whitelist, "data": data})
 
+    async def filtering_refresh(self, whitelist: bool = False, force: bool = False) -> dict:
+        """POST /control/filtering/refresh — re-download the filter lists now."""
+        return (await self._request(
+            "POST", "/control/filtering/refresh",
+            params={"force": "true" if force else "false"},
+            json={"whitelist": whitelist},
+        )).json()
+
+    # --- Protection, safety services and the query log ----------------------
+    async def set_protection(self, enabled: bool, duration_ms: int | None = None) -> None:
+        """Toggle the master DNS-filtering switch.
+
+        AdGuard grew a dedicated /control/protection around v0.107.30; before
+        that the only way was a partial dns_config write. We try the modern
+        endpoint and fall back, so the fleet can hold a mix of versions. The
+        fallback has no notion of a timed disable, so `duration_ms` is dropped —
+        protection stays off until something turns it back on.
+        """
+        payload: dict = {"enabled": enabled}
+        if duration_ms:
+            payload["duration"] = duration_ms
+        try:
+            await self._request("POST", "/control/protection", json=payload)
+        except AdGuardError as exc:
+            if exc.status_code not in (404, 405):
+                raise
+            await self.set_dns_config({"protection_enabled": enabled})
+
+    async def safety_status(self, service: str) -> dict:
+        """GET /control/{safebrowsing,parental,safesearch}/status -> {enabled}."""
+        return (await self._request("GET", f"/control/{service}/status")).json()
+
+    async def set_safety(self, service: str, enabled: bool) -> None:
+        """POST /control/{service}/{enable,disable} — these take no body."""
+        action = "enable" if enabled else "disable"
+        await self._request("POST", f"/control/{service}/{action}")
+
+    async def querylog_info(self) -> dict:
+        """GET /control/querylog_info — {enabled, interval, anonymize_client_ip}."""
+        return (await self._request("GET", "/control/querylog_info")).json()
+
+    async def querylog_config(self, enabled: bool, interval: float) -> None:
+        """POST /control/querylog_config — toggle the log + its retention."""
+        await self._request("POST", "/control/querylog_config",
+                            json={"enabled": enabled, "interval": interval})
+
     # --- Blocked services ---------------------------------------------------
     async def blocked_services_all(self) -> dict:
         """GET /control/blocked_services/all — every blockable service + groups."""

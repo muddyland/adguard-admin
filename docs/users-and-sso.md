@@ -37,6 +37,11 @@ Failed logins are rate-limited per client IP and per username; too many in a row
 returns `429` with a `Retry-After` header. Tune it with `LOGIN_MAX_ATTEMPTS`,
 `LOGIN_WINDOW_SECONDS` and `LOGIN_LOCKOUT_SECONDS`.
 
+A local account is also what the [Home Assistant](home-assistant.md) integration
+authenticates with, over HTTP Basic. An **OIDC-only account has no local password
+and cannot be used there** — create a dedicated local account for it, with the
+`editor` role if you want the switches and services to work.
+
 ## OIDC single sign-on
 
 AdGuard Admin supports OpenID Connect single sign-on **alongside** local

@@ -89,6 +89,23 @@ Only bare-metal installs are upgraded from here; a container cannot replace its
 own image, so Docker hosts run an [on-box updater](updates.md#docker-servers-the-on-box-updater)
 instead. Reconciliation is locked out of a server while it is being upgraded.
 
+## AdGuard-compatible API (Home Assistant)
+
+Serves a subset of AdGuard Home's own `/control` API at this app's root, so Home
+Assistant's built-in AdGuard integration can drive the whole fleet as one device.
+Full guide: [Home Assistant](home-assistant.md).
+
+It is a **second authentication surface**: HTTP Basic against local accounts,
+`viewer` to read and `editor` to write, rate-limited per IP and per username on its
+own budget so a stale Home Assistant password cannot lock you out of the web UI.
+The app logs which mode it is in at startup.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HA_COMPAT_ENABLED` | `true` | Set to `false` to make every `/control` path answer `404`. |
+| `HA_COMPAT_SCOPE` | `fleet` | What the bare `/control` tree covers: `fleet`, `zone:<slug>` or `server:<id-or-name>`. A typo fails at startup. The `/zone/{slug}/control` and `/server/{id}/control` trees work regardless. |
+| `HA_COMPAT_CACHE_SECONDS` | `15` | How long a fleet read is held in memory. Home Assistant polls 14 entities independently and 7 of them read `/control/stats`, so without this each poll cycle fans out to every server a dozen times. Writes clear the cache; `0` disables it. |
+
 ## Embedded AdGuard UI proxy
 
 Renders a managed server's own AdGuard interface inside the admin SPA.

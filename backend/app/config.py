@@ -102,6 +102,21 @@ class Settings(BaseSettings):
     ui_proxy_enabled: bool = True
     proxy_token_ttl_minutes: int = 60
 
+    # --- AdGuard-compatible API (Home Assistant) ---------------------------
+    # Serves a subset of AdGuard Home's own /control API at this app's root, so
+    # Home Assistant's built-in AdGuard Home integration can point at the admin
+    # app and see the whole fleet as one device. Authenticated with HTTP Basic
+    # against local accounts (viewer to read, editor to write).
+    ha_compat_enabled: bool = True
+    # What one "/control" instance represents: "fleet" (every enabled server),
+    # "zone:<slug>", or "server:<id-or-name>". The zone- and server-prefixed
+    # paths below work regardless of this default.
+    ha_compat_scope: str = "fleet"
+    # Home Assistant polls 13 entities independently; without a short cache each
+    # poll cycle would fan out to the whole fleet a dozen times over. Reads
+    # inside this window are served from memory, and any write clears it.
+    ha_compat_cache_seconds: int = 15
+
     # OIDC (all optional — OIDC is disabled unless issuer is set). Nothing here
     # is provider-specific: everything past the issuer and the client
     # credentials comes out of the provider's discovery document.
@@ -184,6 +199,29 @@ def _minutes(hhmm: str) -> int:
     return h * 60 + m
 
 
+VALID_SCOPE_KINDS = {"zone", "server"}
+
+
+def parse_compat_scope(value: str) -> tuple[str, str]:
+    """Parse HA_COMPAT_SCOPE into (kind, selector).
+
+    "fleet" (or empty) means every enabled server; "zone:<slug>" and
+    "server:<id-or-name>" narrow it. Raises ValueError on anything else, so a
+    typo is caught at startup instead of silently serving the whole fleet.
+    """
+    text = (value or "").strip()
+    if not text or text.lower() == "fleet":
+        return ("fleet", "")
+    kind, _, selector = text.partition(":")
+    kind = kind.strip().lower()
+    selector = selector.strip()
+    if kind not in VALID_SCOPE_KINDS or not selector:
+        raise ValueError(
+            f"{value!r} is not a scope; use 'fleet', 'zone:<slug>' or 'server:<id-or-name>'"
+        )
+    return (kind, selector)
+
+
 def config_problems(s: Settings) -> list[str]:
     """Return a list of fatal misconfigurations. Empty means good to start.
 
@@ -235,6 +273,11 @@ def config_problems(s: Settings) -> list[str]:
         parse_window(s.auto_update_window)
     except ValueError as exc:
         problems.append(f"AUTO_UPDATE_WINDOW is invalid: {exc}")
+
+    try:
+        parse_compat_scope(s.ha_compat_scope)
+    except ValueError as exc:
+        problems.append(f"HA_COMPAT_SCOPE is invalid: {exc}")
 
     if s.oidc_default_role not in VALID_ROLES:
         problems.append(

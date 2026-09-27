@@ -20,6 +20,7 @@ from .routers import (
     blocked_services,
     filters,
     forward_zones,
+    ha_compat,
     metrics,
     provision,
     proxy,
@@ -103,6 +104,25 @@ def warn_about_ui_proxy_isolation() -> None:
     )
 
 
+def log_ha_compat_configuration() -> None:
+    """Say that the AdGuard-compatible API is reachable, and on what terms.
+
+    It is a second authentication surface — HTTP Basic against local accounts —
+    so an operator who does not want one should be able to see it in the log
+    rather than discover it in a port scan.
+    """
+    if not settings.ha_compat_enabled:
+        logger.info("AdGuard-compatible API disabled (HA_COMPAT_ENABLED=false)")
+        return
+    logger.info(
+        "AdGuard-compatible API enabled at /control (scope=%s, cache=%ss). "
+        "Authenticated with HTTP Basic against local accounts: viewer to read, "
+        "editor to write. Set HA_COMPAT_ENABLED=false to turn it off.",
+        settings.ha_compat_scope,
+        settings.ha_compat_cache_seconds,
+    )
+
+
 def log_oidc_configuration() -> None:
     """Say what was negotiated, so a provider swap is diagnosable from the log."""
     if not oidc_configured():
@@ -129,6 +149,7 @@ def log_oidc_configuration() -> None:
 async def lifespan(app: FastAPI):
     check_configuration()
     warn_about_ui_proxy_isolation()
+    log_ha_compat_configuration()
     log_oidc_configuration()
     init_db()
     bootstrap_admin()
@@ -227,6 +248,19 @@ app.include_router(proxy.router)
 app.include_router(querylog.router)
 app.include_router(updates.router)
 
+# The AdGuard-compatible API. Home Assistant's config flow has no base-path
+# field, so the fleet-wide tree has to sit at /control exactly where AdGuard Home
+# puts it. The zone- and server-scoped copies of the same router are for scripts
+# and for clients that *can* set a base path; they are kept out of the OpenAPI
+# schema so /docs shows each endpoint once.
+app.include_router(ha_compat.router, prefix="/control")
+app.include_router(
+    ha_compat.router, prefix="/zone/{zone_slug}/control", include_in_schema=False
+)
+app.include_router(
+    ha_compat.router, prefix="/server/{server_ident}/control", include_in_schema=False
+)
+
 
 @app.get("/api/health")
 def health():
@@ -268,8 +302,13 @@ if STATIC_DIR.is_dir():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str):
-        # Never let the catch-all swallow API/doc routes.
-        if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
+        # Never let the catch-all swallow API/doc routes, or the
+        # AdGuard-compatible trees — a client that asks for a /control endpoint
+        # we don't implement must get a 404, not a page of HTML that its JSON
+        # decoder then chokes on.
+        if full_path.startswith(
+            ("api/", "docs", "redoc", "openapi.json", "control/", "zone/", "server/")
+        ):
             raise HTTPException(status_code=404, detail="Not found")
         # Serve a real static file if it exists (favicon, etc.), guarding against
         # path traversal; otherwise fall back to index.html for client-side routes.

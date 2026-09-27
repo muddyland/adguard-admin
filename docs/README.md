@@ -21,6 +21,7 @@ out to every server — and keep them that way.
 | [Updates](updates.md) | Keeping the AdGuard Home containers and binaries themselves current |
 | [Dashboard & query log](dashboard-and-query-log.md) | Fleet-wide metrics and a combined, searchable query log |
 | [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC single sign-on |
+| [Home Assistant](home-assistant.md) | Driving the fleet from Home Assistant's built-in AdGuard integration |
 | [Configuration reference](configuration.md) | Every environment variable |
 
 ## The 30-second version

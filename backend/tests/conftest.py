@@ -34,6 +34,7 @@ from app.database import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Role, Server, User, Zone  # noqa: E402
 from app.routers.auth import login_limiter  # noqa: E402
+from app.routers.ha_compat import cache as compat_cache, compat_limiter  # noqa: E402
 from app.security import hash_password  # noqa: E402
 from app.sync import sync_manager  # noqa: E402
 
@@ -66,6 +67,10 @@ def clean_db():
             session.exec(delete(table))
         session.commit()
     login_limiter.reset()
+    # The compat API's cache and limiter are module-level, so they would
+    # otherwise carry a previous test's fleet readings into the next one.
+    compat_limiter.reset()
+    compat_cache.clear()
     sync_manager.last_results = []
     sync_manager.last_run = None
     yield

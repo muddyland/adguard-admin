@@ -23,6 +23,12 @@ services:
       # Public URL of this admin app, reachable by provisioned servers.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       PROVISION_TOKEN_TTL_HOURS: ${PROVISION_TOKEN_TTL_HOURS:-24}
+      # AdGuard-compatible /control API for Home Assistant's built-in
+      # integration. HTTP Basic against local accounts; set to false to remove it.
+      HA_COMPAT_ENABLED: ${HA_COMPAT_ENABLED:-true}
+      # fleet | zone:<slug> | server:<id-or-name>
+      HA_COMPAT_SCOPE: ${HA_COMPAT_SCOPE:-fleet}
+      HA_COMPAT_CACHE_SECONDS: ${HA_COMPAT_CACHE_SECONDS:-15}
       # OIDC (optional)
       OIDC_ENABLED: ${OIDC_ENABLED:-false}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
