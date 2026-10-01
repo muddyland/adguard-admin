@@ -25,8 +25,7 @@ include:
       - if: $CI_TEMPLATES
 
 variables:
-  # Plain images by default. The internal group overrides these to pull
-  # through its dependency proxy; a mirror needs no such thing.
+  # Plain images by default; override per project to use a mirror.
   PYTHON_IMAGE: "python:3.12-slim"
   NODE_IMAGE: "node:22-alpine"
   # Client and daemon pinned to the same published release. There is no
