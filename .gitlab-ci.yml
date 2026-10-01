@@ -25,14 +25,13 @@ include:
       - if: $CI_TEMPLATES
 
 variables:
-  # Plain images by default. The internal group overrides these to pull
-  # through its dependency proxy; a mirror needs no such thing.
+  # Plain images by default; override per project to use a mirror.
   PYTHON_IMAGE: "python:3.12-slim"
   NODE_IMAGE: "node:22-alpine"
   # Client and daemon pinned to the same published release. There is no
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
   # previous pin failed at image pull, not at anything in the build.
-  DOCKER_IMAGE: "docker:29.7.2"
+  DOCKER_IMAGE: "docker:29.8.2"
 
 # ── Shared bases ──────────────────────────────────────────────────────────
 
