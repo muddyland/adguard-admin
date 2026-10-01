@@ -212,7 +212,15 @@ build:image:
       if [ -n "${DOCKER_BUILD_ADD_HOST:-}" ]; then
         BUILD_ARGS="$BUILD_ARGS --add-host $DOCKER_BUILD_ADD_HOST"
       fi
-      docker build $BUILD_ARGS --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
+      # Push a single image manifest, not an OCI index. Docker 29 builds into
+      # the containerd image store and attaches a provenance attestation by
+      # default, so the push becomes an index of image + attestation manifest.
+      # The project registry rejects that index with "blob unknown to registry"
+      # naming the image manifest's own digest; every push failed that way after
+      # the move off docker:24. Without attestations the push is the same
+      # single manifest docker:24 produced.
+      docker build $BUILD_ARGS --provenance=false --sbom=false \
+        --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
     - IMAGE=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
     - SECRET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "import secrets; print(secrets.token_urlsafe(48))")
     - FERNET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
