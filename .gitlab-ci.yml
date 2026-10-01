@@ -32,7 +32,7 @@ variables:
   # Client and daemon pinned to the same published release. There is no
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
   # previous pin failed at image pull, not at anything in the build.
-  DOCKER_IMAGE: "docker:29.7.2"
+  DOCKER_IMAGE: "docker:29.8.2"
 
 # ── Shared bases ──────────────────────────────────────────────────────────
 
