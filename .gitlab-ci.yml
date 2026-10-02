@@ -26,12 +26,22 @@ include:
 
 variables:
   # Plain images by default; override per project to use a mirror.
-  PYTHON_IMAGE: "python:3.12-slim"
+  PYTHON_IMAGE: "python:3.14-slim"
   NODE_IMAGE: "node:22-alpine"
   # Client and daemon pinned to the same published release. There is no
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
   # previous pin failed at image pull, not at anything in the build.
   DOCKER_IMAGE: "docker:29.8.2"
+  # Set USE_DHI to "true" to build the runtime image on a Docker Hardened Image
+  # (no shell, no package manager) instead of python:3.14-slim. Off by default,
+  # so the public mirror builds on slim. DHI_PYTHON_IMAGE is the repository
+  # without a tag: the build installs into its "-dev" variant and ships the
+  # plain one. The default is Docker's own DHI registry, which needs a login;
+  # internally, set DHI_PYTHON_IMAGE as a CI/CD variable to the registry mirror
+  # instead (kept out of this file, which is mirrored public).
+  USE_DHI: "false"
+  DHI_PYTHON_IMAGE: "dhi.io/python"
+  DHI_PYTHON_TAG: "3.14-alpine"
 
 # ── Shared bases ──────────────────────────────────────────────────────────
 
@@ -211,6 +221,13 @@ build:image:
       if [ -n "${DOCKER_BUILD_ADD_HOST:-}" ]; then
         BUILD_ARGS="$BUILD_ARGS --add-host $DOCKER_BUILD_ADD_HOST"
       fi
+      # USE_DHI swaps both Python stages together: the dependency stage builds
+      # against its image's libc, so the builder and runtime must match.
+      if [ "$USE_DHI" = "true" ]; then
+        echo "USE_DHI=true: runtime image on ${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}"
+        BUILD_ARGS="$BUILD_ARGS --build-arg PYTHON_BUILDER_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}-dev"
+        BUILD_ARGS="$BUILD_ARGS --build-arg PYTHON_RUNTIME_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}"
+      fi
       # Push a single image manifest, not an OCI index. Docker 29 builds into
       # the containerd image store and attaches a provenance attestation by
       # default, so the push becomes an index of image + attestation manifest.
@@ -229,8 +246,9 @@ build:image:
     # that and assert the entrypoint repairs it AND still drops privileges.
     - |
       docker volume rm -f ci_legacy_data || true
-      docker run --rm -v ci_legacy_data:/data --entrypoint sh $IMAGE -c \
-        'python -c "import sqlite3; sqlite3.connect(\"/data/adguard_admin.db\").execute(\"CREATE TABLE t(x)\")" && chown -R 0:0 /data'
+      # Python, not sh: the hardened image has no shell.
+      docker run --rm -v ci_legacy_data:/data --entrypoint python $IMAGE -c \
+        'import os, sqlite3; sqlite3.connect("/data/adguard_admin.db").execute("CREATE TABLE t(x)"); [os.lchown(os.path.join(d, n), 0, 0) for d, ds, fs in os.walk("/data") for n in ds + fs]; os.lchown("/data", 0, 0)'
       docker run -d --name ci_upgrade -v ci_legacy_data:/data \
         -e SECRET_KEY="$SECRET_KEY" -e FERNET_KEY="$FERNET_KEY" \
         -e ADMIN_PASSWORD=ci-not-the-default -e SYNC_INTERVAL_SECONDS=3600 \
@@ -245,10 +263,19 @@ build:image:
       docker logs ci_upgrade
       docker logs ci_upgrade 2>&1 | grep -q "Application startup complete" \
         || { echo "FAIL: container did not start over a legacy root-owned volume"; exit 1; }
-      RUN_UID=$(docker exec ci_upgrade awk '/^Uid:/{print $2}' /proc/1/status)
+      RUN_UID=$(docker exec ci_upgrade python -c 'print(next(l.split()[1] for l in open("/proc/1/status") if l.startswith("Uid:")))')
       test "$RUN_UID" = "10001" \
         || { echo "FAIL: application process runs as uid $RUN_UID, expected 10001"; exit 1; }
       echo "OK: healed a legacy volume and runs as uid $RUN_UID"
+      # The healthcheck is exec-form and must work without a shell too.
+      # The first probe fires one interval (30s) after start.
+      for i in $(seq 1 30); do
+        H=$(docker inspect ci_upgrade --format '{{.State.Health.Status}}')
+        [ "$H" = "healthy" ] && break
+        sleep 3
+      done
+      test "$H" = "healthy" || { echo "FAIL: container health is $H"; exit 1; }
+      echo "OK: container reports healthy"
       docker rm -f ci_upgrade; docker volume rm -f ci_legacy_data
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
   rules:

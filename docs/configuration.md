@@ -228,12 +228,16 @@ entrypoint: ownership of /data updated
 The application process itself never runs as root.
 
 If you have overridden `user:` in your compose file, or dropped `CAP_CHOWN`, the
-entrypoint cannot repair the volume and will say so. Fix it once by hand:
+entrypoint cannot repair the volume and will say so. Fix it once by running the
+entrypoint as root with a no-op command. It repairs `/data`, then exits:
 
 ```bash
-docker compose run --rm --user root --entrypoint sh app -c 'chown -R 10001:10001 /data'
+docker compose run --rm --user root app python -c pass
 docker compose up -d
 ```
+
+This works on both the slim and the hardened image. The hardened image has no
+shell, so `--entrypoint sh` is not an option there.
 
 Once the volume is correct you can pin `user: "10001:10001"` in compose to skip
 the root phase entirely.

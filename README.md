@@ -201,9 +201,30 @@ variable.
   Starlette ≥1.3.1, cryptography ≥50.0.0, idna ≥3.15). Transitive packages that a
   scanner attributes to us carry explicit floors, including the dev toolchain's own
   (`pytest`, `filelock`, `pip`), since a floor is the only way to hold a transitive
-  dependency to a patched release. The images upgrade `pip` before installing, because
-  the base image's own pip ships with advisories and stays in the final layer.
+  dependency to a patched release. The images upgrade `pip` before resolving, so the
+  resolver itself is a patched release. The hardened runtime ships no `pip` at all.
   CI runs `pip-audit`, an npm-side audit and `osv-scanner` on every pipeline.
+
+## Hardened base image
+
+The image can be built on a [Docker Hardened Image](https://docs.docker.com/dhi/)
+instead of `python:3.14-slim`. Its runtime has no shell or package manager, which
+is why the entrypoint is Python and the runtime stage runs no commands. Pass a
+matching pair: the `-dev` variant installs the packages, and the plain variant
+ships them.
+
+```bash
+docker build \
+  --build-arg PYTHON_BUILDER_IMAGE=dhi.io/python:3.14-alpine-dev \
+  --build-arg PYTHON_RUNTIME_IMAGE=dhi.io/python:3.14-alpine \
+  -t adguard-admin .
+```
+
+In CI, set `USE_DHI=true`. Set `DHI_PYTHON_IMAGE` too if the images come from a
+mirror rather than `dhi.io/python`, which needs a Docker login. Both images
+behave the same way: uid 10001, the same `/data` repair on upgrade, and the
+same healthcheck. With no shell, debug the hardened image with `docker debug`,
+not `docker exec sh`.
 
 ## Running the tests
 
