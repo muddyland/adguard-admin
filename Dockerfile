@@ -26,7 +26,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- Stage 2: backend runtime, serving API + built SPA ----
-FROM python:3.12-slim
+FROM python:3.14-slim
 ARG PIP_INDEX_URL
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1

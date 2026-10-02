@@ -26,7 +26,7 @@ include:
 
 variables:
   # Plain images by default; override per project to use a mirror.
-  PYTHON_IMAGE: "python:3.12-slim"
+  PYTHON_IMAGE: "python:3.14-slim"
   NODE_IMAGE: "node:22-alpine"
   # Client and daemon pinned to the same published release. There is no
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a

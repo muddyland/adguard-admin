@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from .validators import (
     validate_display_name,
@@ -43,8 +43,7 @@ class UserRead(BaseModel):
     oidc_sub: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserCreate(BaseModel):
@@ -71,8 +70,7 @@ class ZoneRead(BaseModel):
     server_count: int = 0
     record_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ZoneCreate(BaseModel):
@@ -117,8 +115,7 @@ class ServerRead(BaseModel):
     in_sync: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ServerCreate(BaseModel):
@@ -187,8 +184,7 @@ class RecordRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RecordCreate(BaseModel):
@@ -220,8 +216,7 @@ class UpstreamRead(BaseModel):
     enabled: bool
     description: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UpstreamCreate(BaseModel):
@@ -255,8 +250,7 @@ class ForwardZoneRead(BaseModel):
     enabled: bool
     description: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ForwardZoneCreate(BaseModel):
@@ -291,8 +285,7 @@ class FilterListRead(BaseModel):
     enabled: bool
     description: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FilterListCreate(BaseModel):
@@ -327,8 +320,7 @@ class BlockedServiceRead(BaseModel):
     enabled: bool
     description: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BlockedServiceCreate(BaseModel):
@@ -467,8 +459,7 @@ class UpdateServerRead(BaseModel):
     # Why this server would be skipped right now (None = it is due).
     skip_reason: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UpdateOverviewRead(BaseModel):
