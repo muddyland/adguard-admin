@@ -9,6 +9,7 @@ import ZoneBadge from '../components/ZoneBadge.vue'
 const auth = useAuth()
 const servers = ref([])
 const zones = ref([])
+const agents = ref([])
 const showModal = ref(false)
 const editing = ref(null)
 const form = ref({})
@@ -87,6 +88,25 @@ async function load() {
   const [s, z] = await Promise.all([api.get('/servers'), api.get('/zones')])
   servers.value = s.data
   zones.value = z.data
+  // Hosts are optional context (a server added by URL has none).
+  try { agents.value = (await api.get('/agents')).data } catch { agents.value = [] }
+}
+
+const agentOf = (id) => agents.value.find((a) => a.id === id)
+const hostName = (s) => agentOf(s.agent_id)?.name || (s.agent_id ? `host #${s.agent_id}` : null)
+// The AdGuard role as the agent reports it; only worth showing when it is not simply ready.
+function roleState(s) {
+  const st = s.agent_state
+  if (!s.agent_id || !st || !st.state || st.state === 'ready') return null
+  return st
+}
+function roleClass(state) {
+  return state === 'error' ? 'error' : state === 'stopped' || state === 'absent' ? 'offline' : 'provisioning'
+}
+function lbSummary(s) {
+  const l = s.lb_state
+  if (!l || !Array.isArray(l.balancers) || !l.balancers.length) return null
+  return l
 }
 
 function openCreate() {
@@ -105,7 +125,8 @@ function openEdit(s) {
   form.value = { name: s.name, url: s.url, username: s.username || '', password: '', zone_id: s.zone_id,
                  enabled: s.enabled, prune: s.prune, manage_upstreams: s.manage_upstreams,
                  manage_filtering: s.manage_filtering, auto_update: s.auto_update,
-                 install_method: s.install_method }
+                 install_method: s.install_method, agent_id: s.agent_id || null,
+                 dns_port: s.dns_port ?? 53, expose_web_ui: !!s.expose_web_ui }
   error.value = ''
   showModal.value = true
 }
@@ -121,6 +142,15 @@ async function save() {
   const filteringScopeChoice = payload.import_filtering_scope
   for (const k of ['import_records', 'import_scope', 'import_settings', 'import_settings_scope', 'import_filtering', 'import_filtering_scope']) delete payload[k]
   if (editing.value && !payload.password) delete payload.password // keep existing
+  if (payload.agent_id) {
+    // Agent-managed: the control plane owns the URL and credentials; only the
+    // knobs the agent applies are editable.
+    for (const k of ['url', 'username', 'password']) delete payload[k]
+  } else {
+    delete payload.dns_port
+    delete payload.expose_web_ui
+  }
+  delete payload.agent_id
   try {
     let created = null
     if (editing.value) {
@@ -283,8 +313,9 @@ onMounted(load)
           <th style="cursor:pointer" @click="sortBy('status')">Status{{ sortArrow('status') }}</th>
           <th style="cursor:pointer" @click="sortBy('name')">Server{{ sortArrow('name') }}</th>
           <th style="cursor:pointer" @click="sortBy('zone')">Zone{{ sortArrow('zone') }}</th>
+          <th>Host</th>
           <th style="cursor:pointer" @click="sortBy('version')">Version{{ sortArrow('version') }}</th>
-          <th>Sync</th><th>Prune</th><th>Last synced</th><th></th>
+          <th>Sync</th><th>Balancer</th><th>Prune</th><th>Last synced</th><th></th>
         </tr></thead>
         <tbody>
           <tr v-for="s in sortedServers" :key="s.id">
@@ -293,6 +324,10 @@ onMounted(load)
               <strong>{{ s.name }}</strong>
               <span v-if="!s.enabled" class="badge offline" style="margin-left:6px">disabled</span>
               <div class="muted mono">{{ s.url }}</div>
+              <div v-if="roleState(s)" class="hint">
+                <span class="badge" :class="roleClass(roleState(s).state)">{{ roleState(s).state }}</span>
+                <span v-if="roleState(s).message" :style="roleState(s).state === 'error' ? 'color:var(--red)' : ''" style="margin-left:6px">{{ roleState(s).message }}</span>
+              </div>
               <div v-if="s.last_error" class="hint" style="color:var(--red)">{{ s.last_error }}</div>
               <div v-if="testResult[s.id]" class="hint">
                 <span v-if="testResult[s.id].loading">Testing…</span>
@@ -302,17 +337,34 @@ onMounted(load)
             </td>
             <td><ZoneBadge :id="s.zone_id" :label="zoneName(s.zone_id)" /></td>
             <td>
+              <template v-if="s.agent_id">
+                <router-link to="/hosts" style="font-weight:600">{{ hostName(s) }}</router-link>
+                <div class="hint">agent-managed · DNS :{{ s.dns_port ?? 53 }}<span v-if="s.expose_web_ui"> · UI on LAN</span></div>
+              </template>
+              <span v-else class="badge offline" title="Added by URL; managed over AdGuard's own API">direct</span>
+            </td>
+            <td>
               <span class="mono">{{ s.version || '—' }}</span>
               <router-link v-if="s.update_available" class="badge drift" style="margin-left:6px"
                  :title="`Update available: ${s.latest_version}`" to="/updates">↑ {{ s.latest_version }}</router-link>
               <span v-if="s.auto_update" class="badge global" style="margin-left:4px"
-                    :title="s.install_method === 'docker'
+                    :title="s.install_method === 'docker' && !s.agent_id
                       ? 'Kept up to date by the on-box updater'
                       : 'Kept up to date by AdGuard Admin'">auto-update</span>
             </td>
             <td>
               <span v-if="s.in_sync" class="badge synced">In sync</span>
               <span v-else class="badge drift">Drift</span>
+            </td>
+            <td>
+              <template v-if="lbSummary(s)">
+                <span v-if="lbSummary(s).drained" class="badge drained">drained</span>
+                <span v-else-if="lbSummary(s).down && !lbSummary(s).up" class="badge down" title="Every balancer marks this server down">down</span>
+                <span v-else-if="lbSummary(s).down" class="badge drift" :title="`${lbSummary(s).up} balancer(s) see it up, ${lbSummary(s).down} down`">partly down</span>
+                <span v-else class="badge up">up</span>
+                <div class="hint">{{ lbSummary(s).qps != null ? Number(lbSummary(s).qps).toFixed(1) + ' qps · ' : '' }}{{ lbSummary(s).balancers.map((b) => b.mode ? `${b.name} (${b.mode})` : b.name).join(', ') }}</div>
+              </template>
+              <span v-else class="muted">—</span>
             </td>
             <td>
               {{ s.prune ? 'Prune' : '—' }}
@@ -345,7 +397,7 @@ onMounted(load)
               </ActionMenu>
             </td>
           </tr>
-          <tr v-if="!servers.length"><td colspan="8" class="empty">No servers yet. Add your AdGuard Home instances.</td></tr>
+          <tr v-if="!servers.length"><td colspan="10" class="empty">No servers yet. Add your AdGuard Home instances.</td></tr>
         </tbody>
       </table>
     </div>
@@ -357,20 +409,40 @@ onMounted(load)
       <label>Name</label>
       <input v-model="form.name" placeholder="pi-hole-iot" />
     </div>
+    <div v-if="form.agent_id" class="alert alert-success" style="margin-bottom:14px">
+      Managed by the agent on <strong>{{ hostName(editing) }}</strong>. The URL and credentials are owned by
+      AdGuard Admin and reach the box over mutual TLS; what you change below is pushed to the host on the next sync.
+    </div>
     <div class="form-row">
       <label>URL</label>
-      <input v-model="form.url" placeholder="http://10.0.0.2:3000" />
+      <input v-model="form.url" placeholder="http://10.0.0.2:3000" :disabled="!!form.agent_id" />
     </div>
     <div class="form-grid">
       <div class="form-row">
         <label>AdGuard username</label>
-        <input v-model="form.username" autocomplete="off" />
+        <input v-model="form.username" autocomplete="off" :disabled="!!form.agent_id" />
       </div>
       <div class="form-row">
         <label>AdGuard password</label>
-        <input v-model="form.password" type="password" autocomplete="new-password" :placeholder="editing ? 'unchanged' : ''" />
+        <input v-model="form.password" type="password" autocomplete="new-password" :placeholder="editing ? 'unchanged' : ''" :disabled="!!form.agent_id" />
       </div>
     </div>
+    <template v-if="form.agent_id">
+      <div class="form-grid">
+        <div class="form-row">
+          <label>DNS port</label>
+          <input v-model.number="form.dns_port" type="number" min="1" max="65535" />
+          <div class="hint">Ignored while a balancer on the same host owns port 53 (AdGuard then listens on loopback :5335).</div>
+        </div>
+        <div class="form-row">
+          <label>Web UI</label>
+          <label class="checkbox-row" style="font-weight:400;margin-top:8px">
+            <input type="checkbox" v-model="form.expose_web_ui" /> Expose AdGuard's web UI on the LAN
+          </label>
+          <div class="hint">Off keeps it on loopback; you still reach it through <strong>Open UI</strong> here.</div>
+        </div>
+      </div>
+    </template>
     <div class="form-row">
       <label>Zone</label>
       <select v-model="form.zone_id">

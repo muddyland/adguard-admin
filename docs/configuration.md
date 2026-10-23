@@ -134,15 +134,29 @@ If you do not trust every managed server, set `UI_PROXY_ENABLED=false`. The
 
 ## Provisioning
 
-The public URL must be reachable by the servers you [provision](provisioning.md).
+The public URL must be reachable by the hosts you [provision](provisioning.md),
+and should be HTTPS: the enrollment token and the issued certificate travel over it.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `PUBLIC_BASE_URL` | `http://localhost:8000` | **Externally reachable** URL of this admin app. Used to build install commands and callbacks. |
+| `PUBLIC_BASE_URL` | `http://localhost:8000` | **Externally reachable** URL of this admin app. Used to build the install command, the agent download and the enrollment request. |
 | `PROVISION_TOKEN_TTL_HOURS` | `24` | How long a provisioning token stays valid. |
-| `ADGUARD_DEFAULT_HTTP_PORT` | `3000` | Default admin HTTP port for provisioned servers. |
-| `ADGUARD_DEFAULT_HTTPS_PORT` | `443` | Default admin HTTPS port (when TLS is enabled). |
-| `ADGUARD_DNS_PORT` | `53` | DNS port for provisioned servers. |
+| `ADGUARD_DNS_PORT` | `53` | DNS port AdGuard serves on a provisioned host that has no balancer of its own. |
+| `ADGUARD_COLOCATED_DNS_PORT` | `5335` | Loopback DNS port for an AdGuard that shares its host with a dnsdist balancer (the balancer owns :53). |
+| `ADGUARD_IMAGE` | `adguard/adguardhome:latest` | Image the agent runs for the AdGuard role (Docker installs). |
+| `DNSDIST_IMAGE` | `powerdns/dnsdist-20:2.0.8` | Default image for new load balancers; overridable per balancer. |
+
+## Hosts and agents
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AGENT_BIN_DIR` | `/app/agent-bin` | Where the agent binaries served to the install one-liner live. Built into the image; empty in an API-only dev run, in which case provisioning one-liners cannot download an agent. |
+| `PKI_DIR` | _(beside the SQLite file)_ | Where the CA certificate and this app's client certificate and key are written for outbound mutual TLS (mode 0600). Defaults to a `pki/` folder next to the database, i.e. on the data volume. |
+| `AGENT_TIMEOUT_SECONDS` | `15` | Per-request timeout when talking to an agent. |
+| `AGENT_DEFAULT_PORT` | `8443` | Port new agents listen on, unless set per token. |
+
+The CA itself lives in the database with its key encrypted by `FERNET_KEY`; see
+[Hosts](hosts.md#security-model).
 
 ## Networking / CORS
 

@@ -47,6 +47,9 @@ class SyncStatus(str, Enum):
     online = "online"
     offline = "offline"
     error = "error"
+    # An agent-managed host whose AdGuard role is still being installed or
+    # configured; the server is not reconciled until the agent reports ready.
+    provisioning = "provisioning"
 
 
 class InstallMethod(str, Enum):
@@ -69,6 +72,40 @@ class UpdateState(str, Enum):
     # AdGuard cannot upgrade itself here (a container, or a read-only install).
     # The box updates itself instead — see the on-box updater in updater.py.
     delegated = "delegated"
+
+
+class AgentRole(str, Enum):
+    """What an on-box agent is asked to run. A host may hold several."""
+    adguard = "adguard"
+    dnsdist = "dnsdist"
+
+
+class LbMode(str, Enum):
+    """How a zone's balancers forward traffic."""
+    dnsdist = "dnsdist"   # dnsdist proxy: per-query stats, works across routers; backends see the balancer
+    ipvs = "ipvs"         # keepalived + IPVS direct routing: kernel L4, backends see the real client
+
+
+class IpvsAlgo(str, Enum):
+    rr = "rr"
+    wrr = "wrr"
+    lc = "lc"
+    wlc = "wlc"
+    sh = "sh"
+
+
+class LbPolicy(str, Enum):
+    """dnsdist server-selection policies this app exposes."""
+    leastOutstanding = "leastOutstanding"
+    roundrobin = "roundrobin"
+    wrandom = "wrandom"
+    whashed = "whashed"
+    firstAvailable = "firstAvailable"
+
+
+class HealthCheckMode(str, Enum):
+    auto = "auto"
+    lazy = "lazy"
 
 
 # --------------------------------------------------------------------------- #
@@ -94,6 +131,13 @@ class Zone(SQLModel, table=True):
     name: str = Field(index=True, unique=True)      # e.g. "IoT VLAN"
     slug: str = Field(index=True, unique=True)       # e.g. "iot-vlan"
     description: Optional[str] = None
+    # One virtual IP per zone (CIDR, e.g. 10.0.0.53/24), floated between the
+    # zone's load balancers by VRRP. Null means no VIP.
+    vip: Optional[str] = None
+    # VRRP router id shared by every balancer in the zone (1-255).
+    vrrp_router_id: Optional[int] = None
+    # VRRP authentication password (up to 8 chars), generated, Fernet-encrypted.
+    vrrp_auth_enc: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 
     servers: list["Server"] = Relationship(back_populates="zone")
@@ -115,6 +159,23 @@ class Server(SQLModel, table=True):
     manage_filtering: bool = False
     # Pinned PEM certificate for verifying TLS to this server (self-signed boxes).
     tls_cert: Optional[str] = None
+
+    # --- Agent-managed hosts ----------------------------------------------- #
+    # Set when this AdGuard instance runs on a host with an agent. The agent
+    # installs and configures it and fronts its API over mutual TLS; `url` then
+    # points at the agent's proxy path and the app never speaks to the box
+    # directly. Null for servers added by URL.
+    agent_id: Optional[int] = Field(default=None, foreign_key="agent.id", index=True)
+    # Port AdGuard serves DNS on. 53 normally; 5335 on loopback when the same
+    # host also runs a dnsdist balancer that owns :53.
+    dns_port: int = 53
+    # Publish AdGuard's own web UI on the host's LAN address (0.0.0.0) instead of
+    # keeping it on loopback behind the agent. Off by default.
+    expose_web_ui: bool = False
+    # Last AdGuard role status the agent reported (see docs/design/agent-api.md).
+    agent_state: Optional[dict] = Field(default=None, sa_type=JSON)
+    # What the zone's balancers currently think of this backend.
+    lb_state: Optional[dict] = Field(default=None, sa_type=JSON)
 
     # --- Automatic AdGuard Home upgrades ---------------------------------- #
     # Opt-in: keep this server's AdGuard Home on the latest release.
@@ -269,14 +330,125 @@ class ProvisioningToken(SQLModel, table=True):
     tls_cert: Optional[str] = None
     tls_key_enc: Optional[str] = None
 
+    # Which roles the enrolled host should run. The install script only installs
+    # the agent; the roles are converged by reconciliation afterwards.
+    roles: list[str] = Field(default_factory=lambda: ["adguard"], sa_type=JSON)
+    agent_port: int = 8443
+    vrrp_priority: int = 100
+    expose_web_ui: bool = False
+    lb_mode: LbMode = Field(default=LbMode.dnsdist)
+
     status: ProvisionStatus = Field(default=ProvisionStatus.pending)
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime = Field(default_factory=utcnow)
     completed_at: Optional[datetime] = None
     server_id: Optional[int] = Field(default=None, foreign_key="server.id")
+    agent_id: Optional[int] = Field(default=None, foreign_key="agent.id")
+    load_balancer_id: Optional[int] = Field(default=None, foreign_key="loadbalancer.id")
 
     # Secret-bearing provisioning endpoints are single-fetch: once install.sh has
     # collected the config / private key, a replay of the (log-visible) URL is
     # refused. Set to the time of the first successful fetch.
     config_fetched_at: Optional[datetime] = None
     key_fetched_at: Optional[datetime] = None
+
+
+# --------------------------------------------------------------------------- #
+# Agents (one per managed host) and the CA that authenticates them
+# --------------------------------------------------------------------------- #
+class AgentCA(SQLModel, table=True):
+    """The deployment's private CA plus this app's own client certificate.
+
+    One row. Keys are Fernet-encrypted at rest like every other secret here.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ca_cert_pem: str
+    ca_key_enc: str
+    client_cert_pem: str
+    client_key_enc: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Agent(SQLModel, table=True):
+    """An on-box agent, reachable only over mutual TLS.
+
+    The host's roles (AdGuard, dnsdist) hang off it through Server.agent_id and
+    LoadBalancer.agent_id; a host may hold both.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    url: str                                   # https://10.0.0.11:8443
+    address: str                               # the SAN the cert was issued for
+    port: int = 8443
+    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    hostname: Optional[str] = None
+    os: Optional[str] = None
+    arch: Optional[str] = None
+    version: Optional[str] = None              # agent version it reported
+    cert_pem: str
+    cert_not_after: Optional[datetime] = None
+    status: SyncStatus = Field(default=SyncStatus.unknown)
+    last_seen: Optional[datetime] = None
+    last_error: Optional[str] = None
+    info: Optional[dict] = Field(default=None, sa_type=JSON)
+    health: Optional[dict] = Field(default=None, sa_type=JSON)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+# --------------------------------------------------------------------------- #
+# Load balancers (dnsdist in front of a zone's AdGuard servers)
+# --------------------------------------------------------------------------- #
+class LoadBalancer(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    zone_id: Optional[int] = Field(default=None, foreign_key="zone.id", index=True)
+    agent_id: int = Field(foreign_key="agent.id", index=True)
+    enabled: bool = True
+    install_method: InstallMethod = Field(default=InstallMethod.docker)
+    image: str = "powerdns/dnsdist-20:2.0.8"
+    listen_addresses: list[str] = Field(default_factory=lambda: ["0.0.0.0:53"], sa_type=JSON)
+    policy: LbPolicy = Field(default=LbPolicy.leastOutstanding)
+    # Forward the client's address as EDNS Client Subnet. AdGuard shows it in
+    # the query log details but does not use it to identify clients.
+    ecs: bool = True
+    cache_enabled: bool = False
+    cache_max_entries: int = 100000
+    hc_name: str = "a.root-servers.net."
+    hc_interval_s: int = 1
+    hc_max_failures: int = 3
+    hc_rise: int = 2
+    hc_mode: HealthCheckMode = Field(default=HealthCheckMode.auto)
+    acl: list[str] = Field(
+        default_factory=lambda: [
+            "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+            "::1/128", "fc00::/7", "fe80::/10",
+        ],
+        sa_type=JSON,
+    )
+    # VRRP: priority of this balancer for the zone's VIP, and the interface to
+    # hold it on ("" = the one carrying the agent's address).
+    vrrp_priority: int = 100
+    vip_interface: str = ""
+    # dnsdist (default) or ipvs direct routing. One mode per zone.
+    mode: LbMode = Field(default=LbMode.dnsdist)
+    ipvs_algo: IpvsAlgo = Field(default=IpvsAlgo.wlc)
+
+    desired_hash: Optional[str] = None
+    applied_hash: Optional[str] = None
+    in_sync: bool = False
+    status: SyncStatus = Field(default=SyncStatus.unknown)
+    last_synced: Optional[datetime] = None
+    last_error: Optional[str] = None
+    state: Optional[dict] = Field(default=None, sa_type=JSON)
+    keepalived_state: Optional[dict] = Field(default=None, sa_type=JSON)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class LoadBalancerBackend(SQLModel, table=True):
+    """Per-backend overrides. Absent = the zone default (enabled, weight 1, order 1)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    load_balancer_id: int = Field(foreign_key="loadbalancer.id", index=True)
+    server_id: int = Field(foreign_key="server.id", index=True)
+    enabled: bool = True
+    weight: int = 1
+    order: int = 1

@@ -17,7 +17,9 @@ out to every server — and keep them that way.
 | [Servers](servers.md) | Adding, testing, importing, and tuning per-server behavior |
 | [DNS settings](dns-settings.md) | Upstream resolvers and per-domain forward zones |
 | [Filtering](filtering.md) | Blocklists, allowlists and blocked services |
-| [Provisioning](provisioning.md) | One-line install of brand-new AdGuard servers |
+| [Provisioning](provisioning.md) | One-line install of a managed host running AdGuard Home and/or dnsdist |
+| [Hosts](hosts.md) | The host agent, its mutual-TLS security model, and the Hosts page |
+| [Load balancing](load-balancing.md) | dnsdist balancers per zone, virtual IPs, and the balancer stats |
 | [Updates](updates.md) | Keeping the AdGuard Home containers and binaries themselves current |
 | [Dashboard & query log](dashboard-and-query-log.md) | Fleet-wide metrics and a combined, searchable query log |
 | [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC single sign-on |

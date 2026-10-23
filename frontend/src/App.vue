@@ -16,7 +16,9 @@ watch(() => route.fullPath, () => { navOpen.value = false })
 const nav = [
   { to: '/', label: 'Dashboard', icon: '▤' },
   { to: '/zones', label: 'Zones', icon: '◈' },
+  { to: '/hosts', label: 'Hosts', icon: '▣' },
   { to: '/servers', label: 'Servers', icon: '⛁' },
+  { to: '/load-balancers', label: 'Load Balancers', icon: '⇄' },
   { to: '/records', label: 'DNS Records', icon: '⚲' },
   { to: '/dns-settings', label: 'DNS Settings', icon: '⚙' },
   { to: '/filtering', label: 'Filtering', icon: '⛒' },

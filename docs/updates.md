@@ -13,7 +13,8 @@ is not a preference — it follows from how each install works.
 | Install method | Upgraded by | How |
 |---|---|---|
 | **Bare-metal** (native install) | **AdGuard Admin** | Calls AdGuard Home's own control API (`POST /control/update`) — the same thing its "Update now" button does. The binary is replaced and the service restarts. |
-| **Docker** | **The on-box updater** | A container cannot replace the image it is running from, so AdGuard reports `can_autoupdate: false` and this app will not try. A small updater on the Docker host pulls the image and recreates the container instead. |
+| **Docker on a [managed host](hosts.md)** | **The host agent** | The control plane asks the agent to pull the image and recreate the container with the same volumes, then waits for the instance to answer again. Works from the Updates page like any other server, and also when AdGuard's own version check reports nothing new ("pull & recreate"). |
+| **Docker without an agent** | **The on-box updater** | A container cannot replace the image it is running from, so AdGuard reports `can_autoupdate: false` and this app will not try. A small updater on the Docker host pulls the image and recreates the container instead. |
 
 The admin app has no remote shell on your servers — only AdGuard's HTTP API — so
 for containers there is nothing it *could* run. It records those servers as
@@ -32,7 +33,8 @@ restarts, everything using it for DNS stops resolving.
    servers you want kept current.
 2. Optionally set a maintenance window with `AUTO_UPDATE_WINDOW` (see the
    [configuration reference](configuration.md#automatic-updates)).
-3. For Docker servers, install the on-box updater — see below.
+3. For Docker servers **without an agent**, install the on-box updater — see
+   below. Agent-managed hosts need nothing extra.
 
 `AUTO_UPDATE_ENABLED=false` switches the whole scheduler off without touching
 per-server flags; the manual buttons keep working.
@@ -79,9 +81,10 @@ server that has nothing to install.
 Reconciliation is locked out of a server for the duration, so a sync pass is
 never mid-conversation with a box that is restarting under it.
 
-## Docker servers: the on-box updater
+## Docker servers without an agent: the on-box updater
 
-Run this on any Docker host running AdGuard Home:
+Hosts set up through [provisioning](provisioning.md) have an agent and skip this
+section. For a dockerised AdGuard you added by URL, run this on its Docker host:
 
 ```bash
 curl -fsSL "https://<your-admin-url>/api/updates/docker-agent.sh" | sudo bash
@@ -150,13 +153,13 @@ credentials for this app, exactly like the provisioning one-liner.
 
 ## Provisioning
 
-When you [provision a server](provisioning.md), tick **Keep AdGuard Home up to
+When you [provision a host](provisioning.md), tick **Keep AdGuard Home up to
 date automatically**:
 
-- **Docker** — the install script also installs the on-box updater, and the
-  registered server is marked as a Docker install.
-- **Bare-metal** — the registered server is opted in, and this app upgrades it on
-  the schedule above.
+- **Docker** — the agent on the host performs the upgrade when this app asks
+  it to, on the schedule above.
+- **Bare-metal** — this app upgrades it over AdGuard's control API, on the
+  schedule above.
 
 ## API
 

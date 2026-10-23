@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     adguard_default_https_port: int = 443
     adguard_dns_port: int = 53
 
+    # Agents (on-box, mutual TLS). The agent binaries served for provisioning are
+    # built into the image under AGENT_BIN_DIR; PKI_DIR holds the client chain
+    # httpx needs as files (defaults next to the SQLite database).
+    agent_bin_dir: str = "/app/agent-bin"
+    pki_dir: str = ""
+    agent_timeout_seconds: float = 15.0
+    agent_default_port: int = 8443
+    adguard_image: str = "adguard/adguardhome:latest"
+    dnsdist_image: str = "powerdns/dnsdist-20:2.0.8"
+    # Loopback port AdGuard serves DNS on when a dnsdist balancer shares its host.
+    adguard_colocated_dns_port: int = 5335
+
     # Reconciliation loop
     sync_interval_seconds: int = 60
     # How many servers to reconcile at once. The loop used to be strictly
@@ -162,6 +174,20 @@ class Settings(BaseSettings):
     def oidc_button_label(self) -> str:
         """Label for the SPA's SSO button, e.g. "Sign in with Kanidm"."""
         return f"Sign in with {self.oidc_display_name.strip() or 'SSO'}"
+
+    @property
+    def resolved_pki_dir(self) -> str:
+        """PKI_DIR, or a `pki/` folder beside the SQLite file, or ./pki."""
+        if self.pki_dir.strip():
+            return self.pki_dir.strip()
+        url = self.database_url
+        if url.startswith("sqlite:///"):
+            path = url[len("sqlite:///"):]
+            if path and path not in (":memory:",):
+                import os
+
+                return os.path.join(os.path.dirname(os.path.abspath(path)), "pki")
+        return "./pki"
 
     @property
     def secure_cookies(self) -> bool:

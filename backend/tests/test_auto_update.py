@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from sqlmodel import select
+
 from app import updater as updater_mod
 from app.adguard_client import AdGuardError
 from app.config import Settings, config_problems, parse_window
@@ -23,6 +25,7 @@ from app.updater import (
     run_updates,
     skip_reason,
     update_server,
+    due_server_ids,
 )
 
 NOW = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
@@ -502,36 +505,113 @@ def _create_token(client, headers, **overrides):
     return client.post("/api/provision/tokens", json=payload, headers=headers)
 
 
-def test_provisioned_docker_box_installs_the_on_box_updater(client, editor_headers):
-    token = _create_token(client, editor_headers, auto_update=True).json()
-    assert token["auto_update"] is True
+def _enroll(client, token):
+    from tests.test_pki import make_csr
 
-    config = client.get(f"/api/provision/{token['token']}/config").text
-    assert "AUTO_UPDATE=true" in config
-
-    script = client.get(f"/api/provision/{token['token']}/install.sh").text
-    assert "/api/updates/docker-agent.sh" in script
-
-
-def test_provisioning_without_auto_update_installs_nothing_extra(client, editor_headers):
-    token = _create_token(client, editor_headers).json()
-    assert token["auto_update"] is False
-    assert "AUTO_UPDATE=false" in client.get(f"/api/provision/{token['token']}/config").text
-
-
-def test_completed_provisioning_records_how_the_box_was_installed(
-    client, editor_headers, session
-):
-    """install_method is what decides who performs later upgrades."""
-    token = _create_token(client, editor_headers, auto_update=True, method="bare_metal").json()
-    resp = client.post(
-        f"/api/provision/{token['token']}/complete", json={"address": "10.0.0.9"}
+    csr, _ = make_csr()
+    return client.post(
+        f"/api/provision/{token}/enroll",
+        json={"csr_pem": csr, "hostname": "edge-1", "address": "10.0.0.9", "port": 8443,
+              "os": "linux", "arch": "amd64", "agent_version": "0.1.0"},
     )
-    assert resp.status_code == 200
 
-    server = session.get(Server, resp.json()["server_id"])
+
+def test_provisioning_token_carries_auto_update_and_method(client, editor_headers):
+    token = _create_token(client, editor_headers, auto_update=True).json()
+    assert token["auto_update"] is True and token["method"] == "docker"
+    assert _create_token(client, editor_headers).json()["auto_update"] is False
+    # The install script only installs the agent: no updater, no eval'd config.
+    script = client.get(f"/api/provision/{token['token']}/install.sh").text
+    assert "docker-agent.sh" not in script and "eval" not in script
+    assert '"$BIN" enroll' in script and "--token" in script
+
+
+def test_enrolled_host_records_how_adguard_is_installed(client, editor_headers, session):
+    """install_method is what decides who performs later upgrades: for an
+    agent-managed container, the agent does."""
+    token = _create_token(client, editor_headers, auto_update=True, method="bare_metal").json()
+    resp = _enroll(client, token["token"])
+    assert resp.status_code == 200, resp.text
+
+    server = session.exec(select(Server).where(Server.agent_id == resp.json()["agent_id"])).one()
     assert server.auto_update is True
     assert server.install_method == InstallMethod.bare_metal
+    assert server.url == "https://10.0.0.9:8443/v1/adguard/api"
+
+
+def test_forced_update_of_agent_docker_server_is_allowed_without_known_release(session, zone):
+    """'Pull & recreate' on an agent-managed container is meaningful even when
+    AdGuard's own version check reports nothing new."""
+    from tests.test_hosts import make_agent, make_server
+
+    agent = make_agent(session, zone=zone)
+    managed = make_server(session, "managed", zone, agent)
+    direct = make_server(session, "direct", zone, url="http://10.0.0.20:3000")
+    for s in (managed, direct):
+        s.update_available = False
+        s.latest_version = None
+        session.add(s)
+    session.commit()
+    assert due_server_ids(force=True, only_server_id=managed.id) == [managed.id]
+    assert due_server_ids(force=True, only_server_id=direct.id) == []
+
+
+@pytest.mark.anyio
+async def test_agent_docker_update_goes_through_the_agent(session, zone, monkeypatch):
+    from tests.test_hosts import make_agent, make_server
+
+    agent = make_agent(session, zone=zone)
+    server = make_server(session, "managed", zone, agent)
+    server.version = "v0.107.50"
+    server.latest_version = "v0.107.51"
+    server.update_available = True
+    session.add(server)
+    session.commit()
+
+    class FakeAgent:
+        calls = []
+
+        def __init__(self, url):
+            FakeAgent.calls.append(url)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def adguard_update(self):
+            return {"started": True, "message": "pulled"}
+
+    versions = iter(["v0.107.50", "v0.107.51"])
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def version_check(self, recheck=False):
+            return {"new_version": "v0.107.51", "can_autoupdate": False}
+
+        async def status(self):
+            return {"version": next(versions, "v0.107.51")}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(updater_mod, "AgentClient", FakeAgent)
+    monkeypatch.setattr(updater_mod, "AdGuardClient", FakeClient)
+    monkeypatch.setattr(updater_mod.asyncio, "sleep", _no_sleep)
+
+    outcome = await updater_mod.update_server(server.id)
+    assert outcome.state == UpdateState.succeeded, outcome.message
+    assert outcome.to_version == "v0.107.51"
+    assert FakeAgent.calls == ["https://10.0.0.11:8443"]
+    session.expire_all()
+    assert session.get(Server, server.id).update_state == UpdateState.succeeded
+
+
+async def _no_sleep(_seconds):
+    return None
 
 
 def test_auto_update_default_applies_to_new_servers(client, editor_headers, monkeypatch):

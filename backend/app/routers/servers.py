@@ -8,6 +8,7 @@ from ..adguard_client import AdGuardClient, AdGuardError
 from ..certs import verify_for
 from ..config import settings
 from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
+from ..hosts import release_references
 from ..models import (
     BlockedService,
     ConfigScope,
@@ -91,6 +92,8 @@ def create_server(payload: ServerCreate, _: RequireEditor, session: SessionDep):
             settings.auto_update_default if payload.auto_update is None else payload.auto_update
         ),
         install_method=payload.install_method,
+        dns_port=payload.dns_port,
+        expose_web_ui=payload.expose_web_ui,
     )
     session.add(server)
     session.commit()
@@ -106,6 +109,16 @@ def update_server(server_id: int, payload: ServerUpdate, _: RequireEditor, sessi
     data = payload.model_dump(exclude_unset=True)
     if "zone_id" in data:
         _validate_zone(session, data["zone_id"])
+    if server.agent_id is not None:
+        # The agent owns the connection and the credentials of a managed host;
+        # the operator changes DNS port / web exposure here and the agent applies it.
+        for key in ("url", "username", "password"):
+            if key in data and data[key] not in (None, ""):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} is managed by the host agent and cannot be changed here",
+                )
+            data.pop(key, None)
     if "password" in data:
         # Only rotate when a non-empty password is supplied.
         pw = data.pop("password")
@@ -128,6 +141,7 @@ def delete_server(server_id: int, _: RequireEditor, session: SessionDep):
     server = session.get(Server, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+    release_references(session, server_id=server_id)
     session.delete(server)
     session.commit()
 

@@ -13,14 +13,16 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import config_problems, settings
 from .database import engine, init_db
 from .deps import CurrentUser
-from .models import DNSRecord, Role, Server, SyncStatus, User, Zone
+from .models import Agent, DNSRecord, LoadBalancer, Role, Server, SyncStatus, User, Zone
 from .oidc import oidc_configured
 from .routers import (
+    agents,
     auth,
     blocked_services,
     filters,
     forward_zones,
     ha_compat,
+    loadbalancers,
     metrics,
     provision,
     proxy,
@@ -33,6 +35,7 @@ from .routers import (
     users,
     zones,
 )
+from . import pki
 from .security import hash_password
 from .sync import sync_manager
 from .updater import update_manager
@@ -145,6 +148,21 @@ def log_oidc_configuration() -> None:
         )
 
 
+def prepare_pki() -> None:
+    """Create the agent CA on first start and lay out the client chain for httpx.
+
+    Done at startup rather than lazily so a broken PKI_DIR (unwritable volume)
+    fails loudly here instead of as a per-host error inside the reconcile loop.
+    """
+    material = pki.get_pki()
+    pki.materialize(material)
+    logger.info(
+        "Agent CA ready (fingerprint %s); client material in %s; agent binaries %s",
+        material.ca_fingerprint, pki.pki_dir(),
+        "available" if agents.agent_bin_dir_exists() else "NOT available (AGENT_BIN_DIR missing — provisioning one-liners will fail)",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_configuration()
@@ -153,6 +171,7 @@ async def lifespan(app: FastAPI):
     log_oidc_configuration()
     init_db()
     bootstrap_admin()
+    prepare_pki()
     sync_manager.start()
     update_manager.start()
     logger.info("AdGuard Admin started")
@@ -247,6 +266,8 @@ app.include_router(blocked_services.router)
 app.include_router(proxy.router)
 app.include_router(querylog.router)
 app.include_router(updates.router)
+app.include_router(agents.router)
+app.include_router(loadbalancers.router)
 
 # The AdGuard-compatible API. Home Assistant's config flow has no base-path
 # field, so the fleet-wide tree has to sit at /control exactly where AdGuard Home
@@ -271,11 +292,17 @@ def health():
 def stats(_: CurrentUser):
     with Session(engine) as session:
         servers = session.exec(select(Server)).all()
+        agent_rows = session.exec(select(Agent)).all()
+        lbs = session.exec(select(LoadBalancer)).all()
         return {
             "zones": session.exec(select(func.count()).select_from(Zone)).one(),
             "servers": len(servers),
             "servers_online": sum(1 for s in servers if s.status == SyncStatus.online),
             "servers_in_sync": sum(1 for s in servers if s.in_sync),
+            "agents": len(agent_rows),
+            "agents_online": sum(1 for a in agent_rows if a.status == SyncStatus.online),
+            "load_balancers": len(lbs),
+            "load_balancers_in_sync": sum(1 for lb in lbs if lb.in_sync),
             "records": session.exec(select(func.count()).select_from(DNSRecord)).one(),
             "records_global": session.exec(
                 select(func.count()).select_from(DNSRecord).where(DNSRecord.scope == "global")

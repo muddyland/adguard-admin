@@ -1,0 +1,173 @@
+# Load balancing
+
+Clients configured with a primary and a secondary resolver do not spread load:
+most stacks send everything to the first entry and only fall over on timeout.
+AdGuard Admin fixes that with a **balancer per zone**, declared here and
+converged on the host by the [agent](hosts.md), plus a **virtual IP** per zone
+floated between balancers with **keepalived**.
+
+There are two balancing modes. Every balancer in a zone uses the same one.
+
+| | **dnsdist** (default) | **IPVS direct routing** |
+|---|---|---|
+| What runs on the balancer host | dnsdist, a DNS proxy, plus keepalived for the VIP | keepalived only: it owns the VIP *and* programs the kernel's IPVS table |
+| Where backends can be | Anywhere reachable over IP: other VLANs, cloud boxes | On the **same Layer 2 segment** as the VIP (direct routing rewrites the destination MAC) |
+| What AdGuard sees as the client | The balancer's address (the real client's subnet rides along as ECS, see below) | The **real client address**: query log, client names and per-client rules work |
+| Statistics per backend | Queries, QPS, latency, outstanding, drop rate, health-check failures | Connections, packets in, packets/s in (replies bypass the director) |
+| Policies | leastOutstanding, roundrobin, wrandom, whashed, firstAvailable | rr, wrr, lc, wlc, sh (source hash pins a client to one backend) |
+| Optional cache | Yes (off by default) | No |
+| VIP | Optional | Required: the VIP is the virtual service |
+| AdGuard on a balancer host | Moved to loopback:5335, dnsdist owns :53 | Stays on :53 on every backend, directors included |
+
+Pick **dnsdist** when a zone spans routers or you want per-query insight. Pick
+**IPVS** when a zone is one flat segment and client identity in AdGuard matters.
+Switching a zone's mode later is a normal edit: the agents stand the old role
+down and bring the new one up on the next cycle.
+
+
+## The shape (dnsdist mode)
+
+```
+             clients -> 10.0.0.53  (zone VIP, VRRP)
+                             |
+        +--------------------+--------------------+
+        |                    |                    |
+  host A (agent)       host B (agent)       host C (agent)
+  dnsdist :53          dnsdist :53          dnsdist :53
+  keepalived prio 150  keepalived prio 100  keepalived prio 50
+  AdGuard 127.0.0.1:5335  AdGuard 127.0.0.1:5335  AdGuard 127.0.0.1:5335
+        \________ backends: every AdGuard server in the zone ________/
+```
+
+The recommended layout is **every zone server runs both roles**: provision each
+host with *AdGuard Home* and *dnsdist balancer* ticked. Whichever host holds the
+VIP balances across all the zone's AdGuard instances, including those on the
+other hosts; if it dies, VRRP moves the VIP within about a second and the next
+host's dnsdist takes over with the same backend list. No extra machines.
+
+Dedicated balancer hosts work too: provision them with only the *dnsdist* role.
+
+## The shape (IPVS direct-routing mode)
+
+```
+             clients -> 10.0.0.53  (zone VIP, VRRP)
+                             |
+        +--------------------+--------------------+
+        |                    |                    |
+  host A (director)    host B (backup)      host C (backup)
+  keepalived + IPVS    keepalived + IPVS    keepalived + IPVS
+  VIP on eth0          VIP on lo            VIP on lo
+  AdGuard :53          AdGuard :53          AdGuard :53
+        \__ the VIP owner rewrites each packet's destination MAC to a backend;
+            the backend answers the client directly, from the VIP __/
+```
+
+The same hosts, the same keepalived; the difference is what the VIP owner does
+with a packet. It never terminates the query, so the backend sees the client's
+own address and replies straight back. Every backend, directors included,
+holds the VIP on its loopback with ARP suppressed so it accepts the packet
+without answering ARP for it; the agent configures that (the `ipvs_backend`
+role) on every agent-managed server in the zone. A server added by URL in an
+IPVS zone needs the same by hand:
+
+```bash
+ip addr add 10.0.0.53/32 dev lo
+sysctl -w net.ipv4.conf.all.arp_ignore=1 net.ipv4.conf.all.arp_announce=2 \
+          net.ipv4.conf.lo.arp_ignore=1  net.ipv4.conf.lo.arp_announce=2
+```
+
+Health checks run from the director with the agent's own DNS probe; a failed
+backend stays in the table at weight 0, which is what the page shows as
+**down**. Because replies bypass the director, only inbound counters exist.
+
+## What is derived, what you set
+
+**Derived (you never type it):**
+
+- **Backends** = the enabled AdGuard servers in the balancer's zone. Adding a
+  server to the zone adds it to every balancer in the zone on the next pass.
+- **Addresses and ports.** An AdGuard instance that shares a host with a
+  balancer is moved to **127.0.0.1:5335** (the balancer owns :53); other
+  servers are reached on their host's address and DNS port. Servers added by
+  URL are reached at the URL's host and their *DNS port* setting.
+- **Backend names** (`<server>-<id>`), the dnsdist API key and console key, the
+  VRRP router id and password.
+
+**Set per zone (Zones page):** the **VIP** in CIDR form (`10.0.0.53/24`) and,
+optionally, the **VRRP router id** (1-255). Removing the VIP tells every
+balancer in the zone to stand down keepalived.
+
+**Set per balancer (Load balancers page):**
+
+| Setting | Default | Notes |
+|---|---|---|
+| Mode | `dnsdist` | `dnsdist` or `ipvs`. One mode per zone. |
+| Scheduler (IPVS) | `wlc` | `rr`, `wrr`, `lc`, `wlc`, `sh`. The health check reuses the interval and retry settings below. |
+| Listen addresses (dnsdist) | `0.0.0.0:53` | One per line; IPv6 as `[::]:53`. |
+| Policy | `leastOutstanding` | Also `roundrobin`, `wrandom` (weights), `whashed`, `firstAvailable` (order). |
+| ECS | on | Forward the client's address as EDNS Client Subnet. See the caveat below. |
+| Cache | off | dnsdist packet cache. Off because AdGuard already caches and a front cache undercounts AdGuard's statistics. |
+| Health check | `a.root-servers.net.` every 1 s, down after 3 failures, up after 2 | Mode `auto` or `lazy`. |
+| ACL | RFC 1918, loopback, ULA, link-local | Who may query the balancer. |
+| VRRP priority / interface | 100 / auto | Higher priority owns the VIP. Interface defaults to the one carrying the agent's address. |
+| Install method / image | Docker, `powerdns/dnsdist-20:2.0.8` | Bare-metal uses the distro package. |
+
+**Per backend:** enabled, weight, order (via the detail panel), and **drain**,
+which takes a backend out of rotation immediately without changing the config
+(dnsdist marks it administratively down; undrain returns it to health-checked
+state). Drains survive a dnsdist restart.
+
+## What the page shows
+
+The table gives each balancer's status, host, dnsdist version, VIP and whether
+this host currently **owns** it, backends up/down/drained, total QPS and sync
+state. Select a row for the detail panel, refreshed from the host every 5 s:
+
+- **Backends** with state, QPS, queries, a **share bar** (that backend's part of
+  the balancer's total, the direct answer to "is it balanced"), latency,
+  outstanding queries, drop rate, weight and order.
+- **dnsdist statistics**: queries, responses, SERVFAILs, downstream timeouts and
+  send errors, cache hits and misses, latency averages, memory and CPU.
+- **Frontends** (listeners) and their counters.
+- **VRRP** state when the zone has a VIP.
+
+The Servers page shows the balancers' view of each server (up, down, drained,
+QPS) next to the control plane's own view, so "dnsdist marked this server down"
+is visible without opening the balancer.
+
+## How it converges
+
+Each reconcile cycle renders the balancer's desired state, hashes it, and pushes
+it to the host only when the hash differs from the one the agent reports. The
+agent writes dnsdist's configuration, validates it with `dnsdist --check-config`,
+and restarts dnsdist (sub-second; clients retry). The balancer is **in sync**
+when the agent's applied hash equals the desired one and dnsdist reports ready.
+Balancers are reconciled after servers, so a server that just came online is in
+the pool in the same cycle.
+
+## Caveat: client identity behind a dnsdist balancer
+
+AdGuard Home identifies clients by the **source address** of the query. Behind
+dnsdist that is the balancer's address, so in AdGuard's own query log and
+per-client settings every proxied query looks like it came from the balancer.
+With **ECS** on, dnsdist adds the real client's subnet to each query and AdGuard
+shows it in the query log's request details and forwards it upstream, but
+AdGuard does **not** use it to identify clients. If you rely on AdGuard
+per-client rules, use **IPVS mode** for that zone, keep those clients pointed at
+an AdGuard server directly, or put the rules in blocklists that apply to
+everyone.
+
+## Requirements and ports
+
+- A dnsdist balancer host needs **53/udp and 53/tcp** free (the agent moves a
+  co-located AdGuard to loopback:5335 automatically). An IPVS director needs
+  the `ip_vs` kernel module (loaded by the agent; present in stock Debian,
+  Ubuntu and Fedora kernels). Any VIP needs **VRRP (IP protocol 112)** between
+  the zone's hosts, sent as unicast to the other balancers' addresses.
+- In IPVS mode the director and every backend must share a Layer 2 segment;
+  clients may be anywhere routed to the VIP.
+- The VIP must be in a subnet the hosts share; it is held by one host at a
+  time and must not be handed out by DHCP.
+- dnsdist and keepalived are installed by the agent: dnsdist as the official
+  container (host networking, bound to :53 with the minimum capabilities) or the
+  distro package; keepalived as the distro package.

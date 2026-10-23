@@ -4,16 +4,28 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from .validators import (
+    validate_cidr,
     validate_display_name,
     validate_host,
+    validate_image_ref,
+    validate_interface,
+    validate_listen_address,
     validate_port,
+    validate_priority,
+    validate_router_id,
     validate_server_url,
+    validate_vip,
 )
 from .models import (
+    AgentRole,
     ConfigScope,
     DnsServerKind,
     FilterKind,
+    HealthCheckMode,
     InstallMethod,
+    IpvsAlgo,
+    LbMode,
+    LbPolicy,
     ProvisionStatus,
     RecordScope,
     Role,
@@ -66,9 +78,12 @@ class ZoneRead(BaseModel):
     name: str
     slug: str
     description: Optional[str]
+    vip: Optional[str] = None
+    vrrp_router_id: Optional[int] = None
     created_at: datetime
     server_count: int = 0
     record_count: int = 0
+    load_balancer_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -77,12 +92,36 @@ class ZoneCreate(BaseModel):
     name: str
     slug: Optional[str] = None
     description: Optional[str] = None
+    vip: Optional[str] = None
+    vrrp_router_id: Optional[int] = None
+
+    @field_validator("vip")
+    @classmethod
+    def _check_vip(cls, v: Optional[str]) -> Optional[str]:
+        return validate_vip(v)
+
+    @field_validator("vrrp_router_id")
+    @classmethod
+    def _check_router_id(cls, v: Optional[int]) -> Optional[int]:
+        return validate_router_id(v)
 
 
 class ZoneUpdate(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
+    vip: Optional[str] = None
+    vrrp_router_id: Optional[int] = None
+
+    @field_validator("vip")
+    @classmethod
+    def _check_vip(cls, v: Optional[str]) -> Optional[str]:
+        return validate_vip(v)
+
+    @field_validator("vrrp_router_id")
+    @classmethod
+    def _check_router_id(cls, v: Optional[int]) -> Optional[int]:
+        return validate_router_id(v)
 
 
 # ---- Servers ----
@@ -113,6 +152,11 @@ class ServerRead(BaseModel):
     last_error: Optional[str]
     cooldown_until: Optional[datetime]
     in_sync: bool
+    agent_id: Optional[int] = None
+    dns_port: int = 53
+    expose_web_ui: bool = False
+    agent_state: Optional[dict] = None
+    lb_state: Optional[dict] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -131,6 +175,8 @@ class ServerCreate(BaseModel):
     # None means "use AUTO_UPDATE_DEFAULT".
     auto_update: Optional[bool] = None
     install_method: Optional[InstallMethod] = None
+    dns_port: int = 53
+    expose_web_ui: bool = False
 
     @field_validator("name")
     @classmethod
@@ -155,6 +201,8 @@ class ServerUpdate(BaseModel):
     manage_filtering: Optional[bool] = None
     auto_update: Optional[bool] = None
     install_method: Optional[InstallMethod] = None
+    dns_port: Optional[int] = None
+    expose_web_ui: Optional[bool] = None
 
     @field_validator("name")
     @classmethod
@@ -363,11 +411,18 @@ class CatalogService(BaseModel):
 class ProvisionRequest(BaseModel):
     name: str
     zone_id: Optional[int] = None
+    # Roles the host will run. The install script installs the agent only; the
+    # roles are converged by reconciliation once the agent has enrolled.
+    roles: list[AgentRole] = [AgentRole.adguard]
+    # How the AdGuard role is installed on the box (ignored without that role).
     method: InstallMethod = InstallMethod.docker
-    ssl_enabled: bool = False
-    connect_address: Optional[str] = None  # FQDN/IP; required when ssl_enabled
-    http_port: Optional[int] = None
-    https_port: Optional[int] = None
+    # Address this app will reach the agent at (cert SAN). Defaults to the
+    # address the agent reports at enrollment.
+    connect_address: Optional[str] = None
+    agent_port: Optional[int] = None
+    expose_web_ui: bool = False
+    vrrp_priority: int = 100
+    lb_mode: LbMode = LbMode.dnsdist
     prune: bool = False
     # Keep AdGuard Home up to date on the new box. For a Docker install the
     # script also installs the on-box updater; a bare-metal box is upgraded by
@@ -386,24 +441,38 @@ class ProvisionRequest(BaseModel):
             return None
         return validate_host(v, field="connect_address")
 
-    @field_validator("http_port", "https_port")
+    @field_validator("agent_port")
     @classmethod
     def _check_ports(cls, v: Optional[int]) -> Optional[int]:
         if v is None:
             return None
-        return validate_port(v, field="port")
+        return validate_port(v, field="agent_port")
+
+    @field_validator("roles")
+    @classmethod
+    def _check_roles(cls, v: list[AgentRole]) -> list[AgentRole]:
+        if not v:
+            raise ValueError("at least one role is required")
+        return list(dict.fromkeys(v))
+
+    @field_validator("vrrp_priority")
+    @classmethod
+    def _check_priority(cls, v: int) -> int:
+        return validate_priority(v)
 
 
 class ProvisionTokenRead(BaseModel):
     id: int
     name: str
     zone_id: Optional[int]
+    roles: list[str]
     method: InstallMethod
     auto_update: bool
-    ssl_enabled: bool
     connect_address: Optional[str]
-    http_port: int
-    https_port: int
+    agent_port: int
+    vrrp_priority: int
+    expose_web_ui: bool
+    lb_mode: LbMode = LbMode.dnsdist
     status: ProvisionStatus
     token: str
     command: str
@@ -411,16 +480,22 @@ class ProvisionTokenRead(BaseModel):
     expires_at: datetime
     completed_at: Optional[datetime]
     server_id: Optional[int]
+    agent_id: Optional[int] = None
+    load_balancer_id: Optional[int] = None
 
 
-class ProvisionComplete(BaseModel):
-    """Posted by install.sh on the target box. Token-authenticated only, so the
-    address it reports becomes a URL this app connects to with credentials and
-    reverse-proxies — it must be a plain host, never an arbitrary URL."""
+class EnrollRequest(BaseModel):
+    """Posted by `adguard-admin-agent enroll` on the target box. Token-authenticated
+    only, so the address it reports becomes a URL this app connects to over mTLS
+    and must be a plain host, never an arbitrary URL."""
 
+    csr_pem: str
+    hostname: Optional[str] = None
     address: Optional[str] = None
-    http_port: Optional[int] = None
-    https_port: Optional[int] = None
+    port: Optional[int] = None
+    os: Optional[str] = None
+    arch: Optional[str] = None
+    agent_version: Optional[str] = None
 
     @field_validator("address")
     @classmethod
@@ -429,12 +504,36 @@ class ProvisionComplete(BaseModel):
             return None
         return validate_host(v, field="address")
 
-    @field_validator("http_port", "https_port")
+    @field_validator("port")
     @classmethod
-    def _check_ports(cls, v: Optional[int]) -> Optional[int]:
+    def _check_port(cls, v: Optional[int]) -> Optional[int]:
+        return None if v is None else validate_port(v, field="port")
+
+    @field_validator("hostname", "os", "arch", "agent_version")
+    @classmethod
+    def _check_short(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return None
-        return validate_port(v, field="port")
+        v = v.strip()[:100]
+        if any(ord(c) < 32 or ord(c) == 127 for c in v):
+            raise ValueError("must not contain control characters")
+        return v or None
+
+    @field_validator("csr_pem")
+    @classmethod
+    def _check_csr(cls, v: str) -> str:
+        v = (v or "").strip()
+        if "BEGIN CERTIFICATE REQUEST" not in v or len(v) > 16384:
+            raise ValueError("csr_pem must be a PEM certificate request")
+        return v
+
+
+class EnrollResponse(BaseModel):
+    agent_id: int
+    name: str
+    cert_pem: str
+    ca_pem: str
+    not_after: datetime
 
 
 # ---- Automatic updates ----
@@ -456,6 +555,7 @@ class UpdateServerRead(BaseModel):
     update_attempted_at: Optional[datetime]
     update_completed_at: Optional[datetime]
     update_error: Optional[str]
+    agent_id: Optional[int] = None
     # Why this server would be skipped right now (None = it is due).
     skip_reason: Optional[str] = None
 
@@ -494,3 +594,227 @@ class SyncResultRead(BaseModel):
     filtering_changed: bool = False
     error: Optional[str]
     version: Optional[str]
+
+
+
+# ---- Agents ----
+class AgentRead(BaseModel):
+    id: int
+    name: str
+    url: str
+    zone_id: Optional[int]
+    address: str
+    port: int
+    hostname: Optional[str]
+    os: Optional[str]
+    arch: Optional[str]
+    version: Optional[str]
+    status: SyncStatus
+    last_seen: Optional[datetime]
+    last_error: Optional[str]
+    cert_not_after: Optional[datetime]
+    roles: list[str] = []
+    health: Optional[dict] = None
+    info: Optional[dict] = None
+    server_ids: list[int] = []
+    load_balancer_ids: list[int] = []
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    zone_id: Optional[int] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else validate_display_name(v, field="name")
+
+
+class AgentServiceResult(BaseModel):
+    ok: bool
+    message: str = ""
+
+
+class AgentLogs(BaseModel):
+    lines: list[str]
+
+
+# ---- Load balancers ----
+class LbBackendLive(BaseModel):
+    state: Optional[str] = None
+    drained: bool = False
+    qps: Optional[float] = None
+    queries: Optional[float] = None
+    latency_ms: Optional[float] = None
+    outstanding: Optional[float] = None
+    drop_rate: Optional[float] = None
+    # ipvs mode only
+    conns: Optional[float] = None
+    active_conns: Optional[float] = None
+    inactive_conns: Optional[float] = None
+
+
+class LbBackendRead(BaseModel):
+    server_id: int
+    server_name: str
+    address: str
+    port: int
+    enabled: bool
+    weight: int
+    order: int
+    live: Optional[LbBackendLive] = None
+
+
+class LoadBalancerRead(BaseModel):
+    id: int
+    name: str
+    zone_id: Optional[int]
+    agent_id: int
+    enabled: bool
+    install_method: InstallMethod
+    image: str
+    listen_addresses: list[str]
+    policy: LbPolicy
+    ecs: bool
+    cache_enabled: bool
+    cache_max_entries: int
+    hc_name: str
+    hc_interval_s: int
+    hc_max_failures: int
+    hc_rise: int
+    hc_mode: HealthCheckMode
+    acl: list[str]
+    vrrp_priority: int
+    vip_interface: str
+    mode: LbMode = LbMode.dnsdist
+    ipvs_algo: IpvsAlgo = IpvsAlgo.wlc
+    vip: Optional[str] = None
+    status: SyncStatus
+    in_sync: bool
+    last_synced: Optional[datetime]
+    last_error: Optional[str]
+    desired_hash: Optional[str]
+    applied_hash: Optional[str]
+    state: Optional[dict] = None
+    keepalived_state: Optional[dict] = None
+    backends: list[LbBackendRead] = []
+    created_at: datetime
+
+
+class _LbFields(BaseModel):
+    install_method: Optional[InstallMethod] = None
+    image: Optional[str] = None
+    listen_addresses: Optional[list[str]] = None
+    policy: Optional[LbPolicy] = None
+    ecs: Optional[bool] = None
+    cache_enabled: Optional[bool] = None
+    cache_max_entries: Optional[int] = None
+    hc_name: Optional[str] = None
+    hc_interval_s: Optional[int] = None
+    hc_max_failures: Optional[int] = None
+    hc_rise: Optional[int] = None
+    hc_mode: Optional[HealthCheckMode] = None
+    acl: Optional[list[str]] = None
+    vrrp_priority: Optional[int] = None
+    vip_interface: Optional[str] = None
+    mode: Optional[LbMode] = None
+    ipvs_algo: Optional[IpvsAlgo] = None
+
+    @field_validator("image")
+    @classmethod
+    def _check_image(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else validate_image_ref(v)
+
+    @field_validator("listen_addresses")
+    @classmethod
+    def _check_listen(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        out = [validate_listen_address(a) for a in v if a and a.strip()]
+        if not out:
+            raise ValueError("at least one listen address is required")
+        return out
+
+    @field_validator("acl")
+    @classmethod
+    def _check_acl(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        return [validate_cidr(a) for a in v if a and a.strip()]
+
+    @field_validator("hc_name")
+    @classmethod
+    def _check_hc_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v.endswith("."):
+            v += "."
+        validate_host(v.rstrip("."), field="hc_name")
+        return v
+
+    @field_validator("cache_max_entries", "hc_interval_s", "hc_max_failures", "hc_rise")
+    @classmethod
+    def _check_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if not (1 <= v <= 100_000_000):
+            raise ValueError("must be a positive integer")
+        return v
+
+    @field_validator("vrrp_priority")
+    @classmethod
+    def _check_priority(cls, v: Optional[int]) -> Optional[int]:
+        return None if v is None else validate_priority(v)
+
+    @field_validator("vip_interface")
+    @classmethod
+    def _check_iface(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else validate_interface(v)
+
+
+class LoadBalancerCreate(_LbFields):
+    name: str
+    zone_id: Optional[int] = None
+    agent_id: int
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return validate_display_name(v, field="name")
+
+
+class LoadBalancerUpdate(_LbFields):
+    name: Optional[str] = None
+    zone_id: Optional[int] = None
+    agent_id: Optional[int] = None
+    enabled: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else validate_display_name(v, field="name")
+
+
+class LbBackendUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    weight: Optional[int] = None
+    order: Optional[int] = None
+
+    @field_validator("weight", "order")
+    @classmethod
+    def _check_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if not (1 <= v <= 2_147_483_647):
+            raise ValueError("must be a positive integer")
+        return v
+
+
+class LoadBalancerState(BaseModel):
+    dnsdist: Optional[dict] = None
+    keepalived: Optional[dict] = None

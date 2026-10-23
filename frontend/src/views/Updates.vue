@@ -7,6 +7,7 @@ import ZoneBadge from '../components/ZoneBadge.vue'
 const auth = useAuth()
 const data = ref(null)
 const zones = ref([])
+const serverRows = ref([])   // /servers, for agent_id (the updates view has no host context of its own)
 const busy = ref('')          // '' | 'check' | 'run' | server id
 const msg = ref('')
 const error = ref('')
@@ -25,17 +26,23 @@ const failed = computed(() => servers.value.filter((s) => s.update_state === 'fa
 const checksOff = computed(() =>
   servers.value.filter((s) => s.update_check_disabled && s.install_method !== 'docker')
 )
+// Agent-managed Docker hosts: the agent pulls the image and recreates the
+// container on request, so they are upgradeable from here like any other.
+const agentManaged = (s) => !!(s.agent_id ?? serverRows.value.find((r) => r.id === s.id)?.agent_id)
+const agentDocker = (s) => agentManaged(s) && s.install_method === 'docker'
 // Boxes this app cannot upgrade itself — they need the on-box updater.
 const delegated = computed(() =>
-  servers.value.filter((s) => s.install_method === 'docker' || s.update_state === 'delegated')
+  servers.value.filter((s) => !agentManaged(s) && (s.install_method === 'docker' || s.update_state === 'delegated'))
 )
 
 const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || 'Unzoned'
 
 async function load() {
-  const [u, z] = await Promise.all([api.get('/updates'), api.get('/zones')])
-  data.value = u.data
-  zones.value = z.data
+  const [u, z, sv] = await Promise.allSettled([api.get('/updates'), api.get('/zones'), api.get('/servers')])
+  if (u.status !== 'fulfilled') throw u.reason
+  data.value = u.value.data
+  zones.value = z.status === 'fulfilled' ? z.value.data : []
+  serverRows.value = sv.status === 'fulfilled' ? sv.value.data : []
 }
 
 async function checkAll() {
@@ -71,7 +78,10 @@ async function runAll() {
 }
 
 async function runOne(s) {
-  if (!confirm(`Update ${s.name} to ${s.latest_version} now? AdGuard Home restarts, briefly interrupting DNS on this server.`)) return
+  const what = agentDocker(s) && !s.latest_version
+    ? `Pull the latest AdGuard Home image on ${s.name} and recreate the container?`
+    : `Update ${s.name} to ${s.latest_version} now?`
+  if (!confirm(`${what} AdGuard Home restarts, briefly interrupting DNS on this server.`)) return
   busy.value = s.id
   error.value = ''
   try {
@@ -111,7 +121,7 @@ async function copyCommand() {
 function stateBadge(s) {
   if (s.update_state === 'succeeded') return { cls: 'synced', text: 'updated' }
   if (s.update_state === 'failed') return { cls: 'error', text: 'failed' }
-  if (s.update_state === 'delegated') return { cls: 'global', text: 'on-box updater' }
+  if (s.update_state === 'delegated') return agentManaged(s) ? { cls: 'global', text: 'via agent' } : { cls: 'global', text: 'on-box updater' }
   if (s.update_state === 'running') return { cls: 'drift', text: 'updating…' }
   return null
 }
@@ -220,6 +230,10 @@ onMounted(load)
             <td class="mono">{{ s.version || '—' }}</td>
             <td>
               <span v-if="s.update_available" class="badge drift">↑ {{ s.latest_version }}</span>
+              <span v-else-if="agentDocker(s)" class="badge global"
+                    title="The AdGuard Docker image runs with --no-check-update, so it cannot report releases. The agent on this host pulls the image and recreates the container when asked, or on the schedule when auto-update is on.">
+                via agent
+              </span>
               <span v-else-if="s.update_check_disabled && s.install_method === 'docker'"
                     class="badge global"
                     title="The AdGuard Docker image runs with --no-check-update, so it cannot report releases. The on-box updater keeps it current.">
@@ -243,9 +257,10 @@ onMounted(load)
             </td>
             <td class="row-actions">
               <button v-if="auth.isEditor" class="btn btn-sm"
-                      :disabled="!s.update_available || busy === s.id"
+                      :disabled="(!s.update_available && !agentDocker(s)) || busy === s.id"
+                      :title="agentDocker(s) ? 'Pull the image and recreate the container through the agent' : ''"
                       @click="runOne(s)">
-                <span v-if="busy === s.id" class="spinner"></span><span>Update now</span>
+                <span v-if="busy === s.id" class="spinner"></span><span>{{ agentDocker(s) && !s.update_available ? 'Pull & recreate' : 'Update now' }}</span>
               </button>
             </td>
           </tr>
@@ -255,9 +270,14 @@ onMounted(load)
     </div>
 
     <div class="card">
-      <div class="card-header"><h2>Docker servers</h2></div>
+      <div class="card-header"><h2>Docker servers without an agent</h2></div>
       <div style="padding:16px">
         <p style="margin-top:0">
+          Hosts enrolled through <router-link to="/provision">Provisioning</router-link> need none of this:
+          their agent pulls the image and recreates the container when you press <strong>Pull &amp; recreate</strong>
+          above, or on the schedule when auto-update is on. The rest of this card is for servers added by URL.
+        </p>
+        <p>
           A container cannot replace the image it is running from, so AdGuard Home in Docker
           reports that it cannot update itself and this app will not try. Run the on-box
           updater on those hosts instead — it pulls the image and recreates the container

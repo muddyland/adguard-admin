@@ -23,6 +23,8 @@ os.environ.setdefault("FRONTEND_URL", "http://testserver")
 os.environ.setdefault("CORS_ORIGINS", "http://testserver")
 # Keep the reconcile loop from firing during tests; each test drives it directly.
 os.environ.setdefault("SYNC_INTERVAL_SECONDS", "3600")
+os.environ.setdefault("PKI_DIR", f"{_TMP_DB}/pki")
+os.environ.setdefault("AGENT_BIN_DIR", f"{_TMP_DB}/agent-bin")
 # ---------------------------------------------------------------------------
 
 import pytest  # noqa: E402
@@ -32,6 +34,7 @@ from sqlmodel import Session, SQLModel, delete  # noqa: E402
 from app import models  # noqa: E402,F401  (registers tables)
 from app.database import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app import pki  # noqa: E402
 from app.models import Role, Server, User, Zone  # noqa: E402
 from app.routers.auth import login_limiter  # noqa: E402
 from app.routers.ha_compat import cache as compat_cache, compat_limiter  # noqa: E402
@@ -73,6 +76,9 @@ def clean_db():
     compat_cache.clear()
     sync_manager.last_results = []
     sync_manager.last_run = None
+    # The CA row was just truncated with everything else; a cached copy would
+    # sign certificates no fresh row can verify.
+    pki.reset_cache()
     yield
 
 

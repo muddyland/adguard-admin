@@ -40,7 +40,25 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---- Stage 2: install the backend's Python dependencies ----
+# ---- Stage 2: build the host agent for every architecture we provision ----
+# One static binary per arch; the control plane serves them to the install
+# one-liner together with a checksum manifest (/api/agents/download/...).
+FROM golang:1.24-alpine AS agent
+ARG AGENT_VERSION=dev
+WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false
+COPY agent/go.mod agent/go.sum ./
+RUN go mod download
+COPY agent/ ./
+RUN set -eux; mkdir -p /out; \
+    for arch in amd64 arm64 arm; do \
+      GOOS=linux GOARCH=$arch GOARM=7 go build -trimpath \
+        -ldflags="-s -w -X adguard-admin/agent/internal/server.Version=${AGENT_VERSION}" \
+        -o /out/adguard-admin-agent-linux-$arch ./cmd/adguard-admin-agent; \
+    done; \
+    printf '%s\n' "${AGENT_VERSION}" > /out/VERSION
+
+# ---- Stage 3: install the backend's Python dependencies ----
 FROM ${PYTHON_BUILDER_IMAGE} AS python-deps
 ARG PIP_INDEX_URL
 ENV PIP_NO_CACHE_DIR=1 PIP_ROOT_USER_ACTION=ignore
@@ -53,7 +71,7 @@ RUN pip install --upgrade "pip>=26.2" \
  && pip install --target=/opt/pydeps -r /tmp/requirements.txt \
  && mkdir -p /skel/data
 
-# ---- Stage 3: backend runtime, serving API + built SPA ----
+# ---- Stage 4: backend runtime, serving API + built SPA + agent binaries ----
 #
 # No RUN steps in this stage. The hardened runtime has no shell, so everything
 # here is a COPY or metadata, and the stage builds the same way on either base.
@@ -71,6 +89,8 @@ COPY --from=python-deps /opt/pydeps /opt/pydeps
 COPY backend/app ./app
 # The SPA build lands in /app/static, which app.main serves as a fallback route.
 COPY --from=frontend /frontend/dist ./static
+# Agent binaries, served at /api/agents/download/* (AGENT_BIN_DIR).
+COPY --from=agent /out ./agent-bin
 COPY backend/docker-entrypoint.py /usr/local/bin/docker-entrypoint.py
 
 # /data is the only path the app writes (SQLite plus its WAL and shared-memory
