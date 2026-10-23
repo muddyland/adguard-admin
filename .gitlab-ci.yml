@@ -25,6 +25,8 @@ include:
       - if: $CI_TEMPLATES
 
 variables:
+  # Full history: the image build derives the agent version from git log.
+  GIT_DEPTH: "0"
   # Plain images by default; override per project to use a mirror.
   PYTHON_IMAGE: "python:3.14-slim"
   NODE_IMAGE: "node:22-alpine"
@@ -259,8 +261,17 @@ build:image:
       # naming the image manifest's own digest; every push failed that way after
       # the move off docker:24. Without attestations the push is the same
       # single manifest docker:24 produced.
+      # The agent is versioned by the last commit that touched agent/, not by
+      # the image commit: the control plane pushes a self-update to every host
+      # whenever the shipped version differs from the running one, so keying it
+      # on the image would restart every agent on each control-plane deploy.
+      # A tag still names the release; a clone that cannot see the history
+      # falls back to the image commit (GIT_DEPTH is 0 to make that rare).
+      AGENT_VERSION="${CI_COMMIT_TAG:-$(git log -1 --format=%h --abbrev=8 -- agent 2>/dev/null)}"
+      AGENT_VERSION="${AGENT_VERSION:-$CI_COMMIT_SHORT_SHA}"
+      echo "agent version: $AGENT_VERSION"
       docker build $BUILD_ARGS --provenance=false --sbom=false \
-        --build-arg AGENT_VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}" \
+        --build-arg AGENT_VERSION="$AGENT_VERSION" \
         --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
     - IMAGE=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
     - SECRET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "import secrets; print(secrets.token_urlsafe(48))")

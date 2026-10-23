@@ -62,7 +62,12 @@ control plane asks it to update itself: it hands the agent the download URL
 and the SHA-256 over the mutual-TLS channel, the agent fetches the binary,
 verifies the checksum, replaces itself and exits, and systemd restarts it on
 the new build. AdGuard and the balancer keep running throughout; the host
-shows a brief gap in its status and comes back with the new version.
+shows a brief gap in its status (one reconcile cycle reads it as offline)
+and comes back with the new version.
+
+The version is the last commit that changed the agent itself, not the image
+build, so deploying a control plane whose image carries the same agent code
+restarts nothing on the hosts.
 
 This is on by default (`AGENT_AUTO_UPDATE`); a refused or failed attempt is
 shown on the row and retried after `AGENT_UPDATE_RETRY_MINUTES`. **Update
