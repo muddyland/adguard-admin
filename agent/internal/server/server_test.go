@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -27,6 +29,7 @@ import (
 	"adguard-admin/agent/internal/roles/dnsdist"
 	"adguard-admin/agent/internal/roles/ipvsbackend"
 	"adguard-admin/agent/internal/roles/keepalived"
+	"adguard-admin/agent/internal/selfupdate"
 	"adguard-admin/agent/internal/services"
 )
 
@@ -521,4 +524,110 @@ func anyStrings(v any) []string {
 		}
 	}
 	return out
+}
+
+func TestSelfUpdateRouteReplacesBinaryAndExits(t *testing.T) {
+	f := newFixture(t, nil)
+	payload := []byte("the new agent")
+	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(payload) }))
+	defer dl.Close()
+	exe := filepath.Join(t.TempDir(), "agent")
+	_ = os.WriteFile(exe, []byte("old"), 0o755)
+	exits := make(chan int, 1)
+	f.server.Updater = &selfupdate.Updater{
+		Version:      Version,
+		HTTP:         dl.Client(),
+		Executable:   func() (string, error) { return exe, nil },
+		UnderSystemd: func() bool { return true },
+		Exit:         func(code int) { exits <- code },
+		ExitDelay:    time.Millisecond,
+		// The payload is not a runnable binary; answer for `<exe>.new version`.
+		Probe: func(ctx context.Context, path string) (string, error) { return "9.9.9", nil },
+	}
+	sum := sha256Hex(payload)
+	body := `{"version":"9.9.9","url":"` + dl.URL + `/linux/amd64","sha256":"` + sum + `"}`
+	resp, err := f.good(t).Post(f.srv.URL+"/v1/self-update", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		OK         bool   `json:"ok"`
+		Version    string `json:"version"`
+		Restarting bool   `json:"restarting"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !out.OK || out.Version != "9.9.9" || !out.Restarting {
+		t.Fatalf("status %d body %+v", resp.StatusCode, out)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != string(payload) {
+		t.Fatalf("binary = %q", got)
+	}
+	select {
+	case code := <-exits:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no exit scheduled")
+	}
+	// Same version again: refused, nothing written.
+	same := `{"version":"` + Version + `","url":"` + dl.URL + `/x","sha256":"` + sum + `"}`
+	resp, _ = f.good(t).Post(f.srv.URL+"/v1/self-update", "application/json", strings.NewReader(same))
+	if resp.StatusCode != 409 {
+		t.Fatalf("same version: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestAdGuardResetRoute(t *testing.T) {
+	f := newFixture(t, func(name string, args []string) execx.Result {
+		if name == "docker" && args[0] == "version" {
+			return execx.Result{Stdout: "29.0.0\n"}
+		}
+		return execx.Result{}
+	})
+	// No spec yet: nothing to reset.
+	resp, _ := f.good(t).Post(f.srv.URL+"/v1/adguard/reset", "application/json", nil)
+	if resp.StatusCode != 409 {
+		t.Fatalf("without a spec: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	put, _ := http.NewRequest(http.MethodPut, f.srv.URL+"/v1/adguard", strings.NewReader(`{"enabled":false,"admin_username":"a","admin_password":"b"}`))
+	resp, err := f.good(t).Do(put)
+	if err != nil || resp.StatusCode != 202 {
+		t.Fatalf("put: %v %d", err, resp.StatusCode)
+	}
+	resp.Body.Close()
+	// The fixture does not run converge loops, so the lock is free.
+	resp, _ = f.good(t).Post(f.srv.URL+"/v1/adguard/reset", "application/json", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("reset: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	calls := callsJoined(f.fake)
+	for _, want := range []string{"docker rm -f adguardhome", "docker rm -f adguardhome-prev", "docker volume rm -f adguardhome-work adguardhome-conf"} {
+		if !contains(calls, want) {
+			t.Fatalf("missing %q in %v", want, calls)
+		}
+	}
+	if c := f.manager.Common("adguard"); c.AppliedHash != "" || c.State != "installing" {
+		t.Fatalf("applied state not cleared: %+v", c)
+	}
+	// While a converge holds the lock the reset is refused.
+	unlock, ok := f.manager.TryLockConverge("adguard")
+	if !ok {
+		t.Fatal("lock should be free")
+	}
+	resp, _ = f.good(t).Post(f.srv.URL+"/v1/adguard/reset", "application/json", nil)
+	unlock()
+	if resp.StatusCode != 409 {
+		t.Fatalf("during converge: status %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func sha256Hex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }

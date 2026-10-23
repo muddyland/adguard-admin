@@ -63,8 +63,18 @@ type Role struct {
 // New builds a role with production defaults.
 func New(h services.Host) *Role {
 	r := &Role{
-		Host:        h,
-		HTTP:        &http.Client{Timeout: 10 * time.Second},
+		Host: h,
+		// Never follow redirects: an unconfigured instance answers /control/status
+		// with a 302 to its install page, and a configured one may redirect to
+		// its login page. Either is "the server answered". Following the
+		// redirect could end on an address the agent cannot reach, which made
+		// a healthy container look silent.
+		HTTP: &http.Client{
+			Timeout: 10 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		BareDir:     "/opt/AdGuardHome",
 		WaitTimeout: 90 * time.Second,
 		Sleep:       time.Sleep,
@@ -307,6 +317,39 @@ func (r *Role) Update(ctx context.Context, spec any, hash string) (bool, string,
 	return true, "container recreated from " + s.Image, nil
 }
 
+// Reset wipes the AdGuard install so the next converge runs the first-run
+// wizard again with the control plane's credentials. Docker: the container,
+// its previous-generation twin and both named volumes. Bare metal: the
+// service is stopped and the configuration file and data directory removed.
+// The caller clears the applied hash and triggers the converge.
+func (r *Role) Reset(ctx context.Context, spec any) error {
+	s, ok := spec.(*Spec)
+	if !ok || s == nil {
+		return errors.New("adguard is not managed on this host")
+	}
+	if s.InstallMethod == "docker" {
+		if !r.Host.HasDocker(ctx) {
+			return errors.New("docker is not available on this host")
+		}
+		for _, name := range []string{ContainerName, ContainerName + "-prev"} {
+			_, _, _ = r.Host.R.Run(ctx, "docker", "rm", "-f", name)
+		}
+		if _, _, err := r.Host.R.Run(ctx, "docker", "volume", "rm", "-f", "adguardhome-work", "adguardhome-conf"); err != nil {
+			return err
+		}
+		return nil
+	}
+	if r.Host.HasSystemd() {
+		_, _, _ = r.Host.R.Run(ctx, "systemctl", "stop", UnitName)
+	}
+	for _, path := range []string{filepath.Join(r.BareDir, "AdGuardHome.yaml"), filepath.Join(r.BareDir, "data")} {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // ------------------------------------------------------------- bare metal ----
 
 func (r *Role) convergeBare(ctx context.Context, s *Spec, hash string, report roles.Reporter) (roles.Outcome, error) {
@@ -445,15 +488,22 @@ func (r *Role) do(ctx context.Context, method, url string, s *Spec, body []byte)
 	return resp.StatusCode, b, nil
 }
 
-// waitWeb waits until the web server at base answers anything at all.
+// waitWeb waits until the web server at base answers anything at all. The
+// timeout message carries the last transport error: without it, "did not
+// answer" is indistinguishable from "answered in a way we could not read".
 func (r *Role) waitWeb(ctx context.Context, base string) error {
 	deadline := time.Now().Add(r.WaitTimeout)
+	var lastErr error
 	for {
-		if status, _, _ := r.do(ctx, http.MethodGet, base+"/control/status", nil, nil); status != 0 {
+		status, _, err := r.do(ctx, http.MethodGet, base+"/control/status", nil, nil)
+		if status != 0 {
 			return nil
 		}
+		if err != nil {
+			lastErr = err
+		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("AdGuard Home did not answer on %s within %s", base, r.WaitTimeout)
+			return fmt.Errorf("AdGuard Home did not answer on %s within %s (last error: %v)", base, r.WaitTimeout, lastErr)
 		}
 		if err := ctx.Err(); err != nil {
 			return err

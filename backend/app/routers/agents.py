@@ -6,11 +6,8 @@ any credential for this app, exactly like the old `docker-agent.sh`.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-import threading
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -19,7 +16,8 @@ from sqlmodel import select
 from ..agent_client import SERVICES, AgentClient, AgentError
 from ..config import settings
 from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
-from ..hosts import reconcile_agent, release_references
+from .. import agent_bin
+from ..hosts import reconcile_agent, release_references, update_agent_now
 from ..models import Agent, LoadBalancer, Server, SyncStatus, Zone
 from ..pki import cert_not_after, get_pki, sign_agent_csr
 from ..schemas import AgentLogs, AgentRead, AgentServiceResult, AgentUpdate
@@ -28,9 +26,7 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 logger = logging.getLogger("adguard_admin.agents")
 
-ARCHES = ("amd64", "arm64", "arm")
-_manifest_lock = threading.Lock()
-_manifest_cache: tuple[tuple, dict] | None = None
+ARCHES = agent_bin.ARCHES
 
 
 def to_read(session, agent: Agent) -> AgentRead:
@@ -45,6 +41,8 @@ def to_read(session, agent: Agent) -> AgentRead:
     item.roles = roles
     item.server_ids = server_ids
     item.load_balancer_ids = lb_ids
+    shipped = agent_bin.shipped_version()
+    item.update_available = bool(shipped and (agent.version or "").strip() != shipped)
     return item
 
 
@@ -58,46 +56,8 @@ def _get(session, agent_id: int) -> Agent:
 # --------------------------------------------------------------------------- #
 # Downloads (public)
 # --------------------------------------------------------------------------- #
-def _bin_dir() -> Path:
-    return Path(settings.agent_bin_dir)
-
-
-def _binary_path(arch: str) -> Path:
-    return _bin_dir() / f"adguard-admin-agent-linux-{arch}"
-
-
 def build_manifest() -> dict:
-    """Checksums of the shipped binaries, recomputed only when a file changes."""
-    global _manifest_cache
-    d = _bin_dir()
-    entries = []
-    for arch in ARCHES:
-        p = _binary_path(arch)
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        entries.append((arch, st.st_mtime_ns, st.st_size))
-    key = tuple(entries)
-    with _manifest_lock:
-        if _manifest_cache and _manifest_cache[0] == key:
-            return _manifest_cache[1]
-    files = {}
-    for arch, _mtime, size in entries:
-        h = hashlib.sha256()
-        with open(_binary_path(arch), "rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                h.update(chunk)
-        files[f"linux/{arch}"] = {"sha256": h.hexdigest(), "size": size}
-    version = "unknown"
-    try:
-        version = (d / "VERSION").read_text().strip() or version
-    except OSError:
-        pass
-    manifest = {"version": version, "files": files}
-    with _manifest_lock:
-        _manifest_cache = (key, manifest)
-    return manifest
+    return agent_bin.build_manifest()
 
 
 @router.get("/download/manifest")
@@ -115,7 +75,7 @@ def download_manifest():
 def download_binary(arch: str):
     if arch not in ARCHES:
         raise HTTPException(status_code=404, detail="Unknown architecture")
-    p = _binary_path(arch)
+    p = agent_bin.binary_path(arch)
     if not p.is_file():
         raise HTTPException(status_code=404, detail=f"No agent build for linux/{arch}")
     return FileResponse(
@@ -190,6 +150,23 @@ async def restart_service(agent_id: int, service: str, _: RequireEditor, session
     except AgentError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return AgentServiceResult(ok=bool((data or {}).get("ok", True)), message=(data or {}).get("message") or "")
+
+
+@router.post("/{agent_id}/update", response_model=AgentRead)
+async def update_agent_binary(agent_id: int, _: RequireEditor, session: SessionDep):
+    """Push the agent build shipped with this control plane to the host now.
+
+    The agent verifies the checksum and restarts itself; the row's
+    `update_error` says why if it refused (same version, no build for its arch).
+    """
+    _get(session, agent_id)
+    session.commit()
+    outcome = await update_agent_now(agent_id)
+    session.expire_all()
+    agent = _get(session, agent_id)
+    if outcome is not None and outcome.error:
+        raise HTTPException(status_code=502, detail=outcome.error)
+    return to_read(session, agent)
 
 
 @router.post("/{agent_id}/renew-cert", response_model=AgentRead)

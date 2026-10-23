@@ -154,6 +154,8 @@ and should be HTTPS: the enrollment token and the issued certificate travel over
 | `PKI_DIR` | _(beside the SQLite file)_ | Where the CA certificate and this app's client certificate and key are written for outbound mutual TLS (mode 0600). Defaults to a `pki/` folder next to the database, i.e. on the data volume. |
 | `AGENT_TIMEOUT_SECONDS` | `15` | Per-request timeout when talking to an agent. |
 | `AGENT_DEFAULT_PORT` | `8443` | Port new agents listen on, unless set per token. |
+| `AGENT_AUTO_UPDATE` | `true` | Push the shipped agent build to hosts running another version; the agent verifies the SHA-256 and restarts itself. `false` leaves updates to the **Update agent** action. |
+| `AGENT_UPDATE_RETRY_MINUTES` | `30` | How long to wait before re-trying a host whose update was refused or did not take. |
 
 The CA itself lives in the database with its key encrypted by `FERNET_KEY`; see
 [Hosts](hosts.md#security-model).

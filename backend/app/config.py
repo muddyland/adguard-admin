@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     pki_dir: str = ""
     agent_timeout_seconds: float = 15.0
     agent_default_port: int = 8443
+    # Push the shipped agent build to hosts running another version. The agent
+    # verifies the SHA-256 we hand it over mTLS and restarts itself.
+    agent_auto_update: bool = True
+    agent_update_retry_minutes: int = 30
     adguard_image: str = "adguard/adguardhome:latest"
     dnsdist_image: str = "powerdns/dnsdist-20:2.0.8"
     # Loopback port AdGuard serves DNS on when a dnsdist balancer shares its host.

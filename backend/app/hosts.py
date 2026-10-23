@@ -23,10 +23,11 @@ import asyncio
 import logging
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
+from . import agent_bin
 from .agent_client import AgentClient, AgentError
 from .config import settings
 from .database import engine
@@ -328,6 +329,9 @@ class AgentPlan:
     url: str
     cert_pem: str
     cert_not_after: datetime | None
+    arch: str | None = None
+    version: str | None = None
+    update_attempted_at: datetime | None = None
     # servers on this host: (server_id, spec)
     adguard: list[tuple[int, dict]] = field(default_factory=list)
     # ipvs_backend spec when this host's AdGuard is a direct-routing backend
@@ -345,6 +349,9 @@ class AgentOutcome:
     adguard_status: dict[int, dict] = field(default_factory=dict)
     ipvs_backend_status: dict | None = None
     renewed_cert: str | None = None
+    # Set when a self-update was requested this pass (success or refusal).
+    update_requested: bool = False
+    update_error: str | None = None
 
 
 def _agent_plan(session: Session, agent_id: int) -> AgentPlan | None:
@@ -354,6 +361,7 @@ def _agent_plan(session: Session, agent_id: int) -> AgentPlan | None:
     plan = AgentPlan(
         agent_id=agent.id, name=agent.name, url=agent.url,
         cert_pem=agent.cert_pem, cert_not_after=agent.cert_not_after,
+        arch=agent.arch, version=agent.version, update_attempted_at=agent.update_attempted_at,
     )
     colocated = zone_has_balancer_on_agent(session, agent.id)
     for s in session.exec(select(Server).where(Server.agent_id == agent.id)).all():
@@ -366,6 +374,45 @@ def _agent_plan(session: Session, agent_id: int) -> AgentPlan | None:
         if ipvs and s.enabled:
             plan.ipvs_backend = ipvs_backend_spec(zone, enabled=True)
     return plan
+
+
+def update_due(plan_version: str | None, reported: str | None, attempted_at: datetime | None,
+               *, force: bool = False, now: datetime | None = None) -> bool:
+    """Whether to push the shipped build to an agent reporting `reported`."""
+    shipped = agent_bin.shipped_version()
+    if shipped is None:
+        return False
+    if not force:
+        if not settings.agent_auto_update:
+            return False
+        if attempted_at is not None:
+            if attempted_at.tzinfo is None:
+                attempted_at = attempted_at.replace(tzinfo=timezone.utc)
+            if (now or _now()) - attempted_at < timedelta(minutes=settings.agent_update_retry_minutes):
+                return False
+    return (reported or "").strip() != shipped
+
+
+async def _self_update_if_due(client: AgentClient, plan: AgentPlan, outcome: AgentOutcome, *, force: bool = False) -> bool:
+    reported = str((outcome.info or {}).get("agent_version") or plan.version or "")
+    arch = str((outcome.info or {}).get("arch") or plan.arch or "")
+    if not update_due(plan.version, reported, plan.update_attempted_at, force=force):
+        return False
+    target = agent_bin.update_for(arch)
+    if target is None:
+        outcome.update_requested = True
+        outcome.update_error = f"no agent build for linux/{arch or '?'} on this control plane"
+        return False
+    version, url, sha256 = target
+    outcome.update_requested = True
+    try:
+        reply = await client.self_update(version, url, sha256)
+    except AgentError as exc:
+        outcome.update_error = str(exc)
+        logger.warning("agent %s refused the update to %s: %s", plan.name, version, exc)
+        return False
+    logger.info("agent %s (%s) is updating to %s: %s", plan.name, reported, version, reply)
+    return bool((reply or {}).get("ok", True))
 
 
 async def _renew_if_due(client: AgentClient, plan: AgentPlan, outcome: AgentOutcome) -> None:
@@ -397,6 +444,11 @@ async def _run_agent_plan(plan: AgentPlan) -> AgentOutcome:
         return outcome
     try:
         outcome.info = await client.info()
+        if await _self_update_if_due(client, plan, outcome):
+            # The agent is replacing itself and will restart; the roles are
+            # converged by the next pass against the new binary.
+            outcome.status = SyncStatus.online
+            return outcome
         outcome.health = await client.health()
         desired = (outcome.info or {}).get("desired_hashes") or {}
         for server_id, spec in plan.adguard:
@@ -455,6 +507,9 @@ def _record_agent(outcome: AgentOutcome) -> None:
         if outcome.renewed_cert:
             agent.cert_pem = outcome.renewed_cert
             agent.cert_not_after = cert_not_after(outcome.renewed_cert)
+        if outcome.update_requested:
+            agent.update_attempted_at = _now()
+            agent.update_error = outcome.update_error
         session.add(agent)
         for server_id, status in outcome.adguard_status.items():
             server = session.get(Server, server_id)
@@ -479,6 +534,35 @@ def _record_agent(outcome: AgentOutcome) -> None:
                 server.last_error = f"Agent unreachable: {outcome.error}"
                 session.add(server)
         session.commit()
+
+
+async def update_agent_now(agent_id: int) -> AgentOutcome | None:
+    """Push the shipped agent build to one host regardless of the retry window."""
+    plan = await asyncio.to_thread(lambda: _plan_in_session(_agent_plan, agent_id))
+    if plan is None:
+        return None
+    outcome = AgentOutcome(agent_id=plan.agent_id, name=plan.name, status=SyncStatus.unknown)
+    try:
+        client = AgentClient(plan.url)
+    except Exception as exc:  # noqa: BLE001
+        outcome.status = SyncStatus.error
+        outcome.error = f"PKI error: {exc}"
+        await asyncio.to_thread(_record_agent, outcome)
+        return outcome
+    try:
+        outcome.info = await client.info()
+        started = await _self_update_if_due(client, plan, outcome, force=True)
+        if not started and not outcome.update_error and not outcome.update_requested:
+            outcome.update_requested = True
+            outcome.update_error = "already on the shipped version"
+        outcome.status = SyncStatus.online
+    except AgentError as exc:
+        outcome.status = SyncStatus.error if exc.status_code else SyncStatus.offline
+        outcome.error = str(exc)
+    finally:
+        await client.aclose()
+    await asyncio.to_thread(_record_agent, outcome)
+    return outcome
 
 
 async def reconcile_agent(agent_id: int) -> AgentOutcome | None:

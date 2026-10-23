@@ -94,6 +94,10 @@ _ADDED_COLUMNS = {
         "mode": "TEXT DEFAULT 'dnsdist'",
         "ipvs_algo": "TEXT DEFAULT 'wlc'",
     },
+    "agent": {
+        "update_attempted_at": "TIMESTAMP",
+        "update_error": "TEXT",
+    },
 }
 
 # Tables whose old single zone_id should be folded into the new zone_ids list.

@@ -55,6 +55,7 @@ class FakeAgent:
     reply_health: dict = {"load": [0.1, 0.1, 0.1]}
     roles: dict = {}
     fail: Exception | None = None
+    update_reply: dict | None = None
     puts: list[tuple[str, dict]] = []
 
     def __init__(self, url, **kw):
@@ -92,6 +93,12 @@ class FakeAgent:
     async def renew_csr(self):
         raise AssertionError("renewal should not run in these tests")
 
+    async def self_update(self, version, url, sha256):
+        FakeAgent.puts.append(("self-update", {"version": version, "url": url, "sha256": sha256}))
+        if FakeAgent.update_reply is not None:
+            return FakeAgent.update_reply
+        return {"ok": True, "version": version, "restarting": True}
+
 
 @pytest.fixture
 def fake_agent(monkeypatch):
@@ -101,8 +108,25 @@ def fake_agent(monkeypatch):
     FakeAgent.reply_info = {"agent_version": "0.1.0", "hostname": "host-a", "os": "linux", "arch": "amd64",
                             "desired_hashes": {"adguard": None, "dnsdist": None, "keepalived": None}}
     FakeAgent.roles = {}
+    FakeAgent.update_reply = None
     monkeypatch.setattr(hosts, "AgentClient", FakeAgent)
+    # No shipped build unless a test says so.
+    monkeypatch.setattr(hosts.agent_bin, "shipped_version", lambda: None)
     return FakeAgent
+
+
+@pytest.fixture
+def shipped(monkeypatch):
+    """Pretend this control plane ships agent 0.2.0 for amd64 only."""
+    monkeypatch.setattr(hosts.agent_bin, "shipped_version", lambda: "0.2.0")
+
+    def update_for(arch):
+        if arch == "amd64":
+            return ("0.2.0", "http://testserver/api/agents/download/linux/amd64", "ab" * 32)
+        return None
+
+    monkeypatch.setattr(hosts.agent_bin, "update_for", update_for)
+    return "0.2.0"
 
 
 # --------------------------------------------------------------------------- #
@@ -415,3 +439,73 @@ async def test_reconcile_ipvs_balancer_without_vip_is_an_error(session, zone, fa
     lb = make_lb(session, "lb", zone, agent, mode="ipvs")
     outcome = await hosts.reconcile_load_balancer(lb.id)
     assert outcome.status == SyncStatus.error and "VIP" in outcome.error
+
+
+# --------------------------------------------------------------------------- #
+# Agent self-update
+# --------------------------------------------------------------------------- #
+def test_update_due_rules(shipped, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+    assert hosts.update_due(None, "0.1.0", None, now=now)
+    assert not hosts.update_due(None, "0.2.0", None, now=now)
+    # Retry window: a recent attempt holds the push back, force ignores it.
+    recent = now - timedelta(minutes=5)
+    assert not hosts.update_due(None, "0.1.0", recent, now=now)
+    assert hosts.update_due(None, "0.1.0", recent, now=now, force=True)
+    assert hosts.update_due(None, "0.1.0", now - timedelta(hours=2), now=now)
+    monkeypatch.setattr(hosts.settings, "agent_auto_update", False)
+    assert not hosts.update_due(None, "0.1.0", None, now=now)
+    assert hosts.update_due(None, "0.1.0", None, now=now, force=True)
+
+
+@pytest.mark.anyio
+async def test_reconcile_pushes_self_update_and_skips_roles(session, zone, fake_agent, shipped):
+    agent = make_agent(session, zone=zone)
+    make_server(session, "dns-a", zone, agent)
+    fake_agent.reply_info["agent_version"] = "0.1.0"
+    outcome = await hosts.reconcile_agent(agent.id)
+    assert outcome.status == SyncStatus.online and outcome.update_requested
+    assert fake_agent.puts == [("self-update", {"version": "0.2.0",
+                                                "url": "http://testserver/api/agents/download/linux/amd64",
+                                                "sha256": "ab" * 32})]
+    session.expire_all()
+    a = session.get(Agent, agent.id)
+    assert a.update_attempted_at is not None and a.update_error is None
+
+    # Next pass inside the retry window: no second push, roles converge normally.
+    fake_agent.puts.clear()
+    fake_agent.roles["adguard"] = {"state": "ready"}
+    await hosts.reconcile_agent(agent.id)
+    assert [r for r, _ in fake_agent.puts] == ["adguard"]
+
+
+@pytest.mark.anyio
+async def test_no_build_for_arch_is_recorded_not_fatal(session, zone, fake_agent, shipped):
+    agent = make_agent(session, zone=zone)
+    make_server(session, "dns-a", zone, agent)
+    fake_agent.reply_info["agent_version"] = "0.1.0"
+    fake_agent.reply_info["arch"] = "riscv64"
+    fake_agent.roles["adguard"] = {"state": "ready"}
+    outcome = await hosts.reconcile_agent(agent.id)
+    assert outcome.status == SyncStatus.online
+    assert "no agent build for linux/riscv64" in outcome.update_error
+    assert [r for r, _ in fake_agent.puts] == ["adguard"]  # roles still converged
+
+
+@pytest.mark.anyio
+async def test_update_agent_now_reports_refusal(session, zone, fake_agent, shipped):
+    from app.agent_client import AgentError
+
+    agent = make_agent(session, zone=zone)
+    fake_agent.reply_info["agent_version"] = "0.1.0"
+
+    async def refuse(self, version, url, sha256):
+        raise AgentError("POST /v1/self-update -> HTTP 409: checksum mismatch", status_code=409)
+
+    fake_agent.self_update = refuse
+    outcome = await hosts.update_agent_now(agent.id)
+    assert outcome.update_requested and "checksum mismatch" in outcome.update_error
+    session.expire_all()
+    assert "checksum mismatch" in session.get(Agent, agent.id).update_error

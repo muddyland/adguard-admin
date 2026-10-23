@@ -8,10 +8,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
 )
+
+// Debug, when set, receives the complete stderr of every failed command. The
+// error returned to callers carries only the last meaningful line: a failed
+// `docker run` otherwise reports dozens of lines of image-pull progress ahead
+// of the one line that says why it failed.
+var Debug *log.Logger
 
 // Runner runs programs.
 type Runner interface {
@@ -37,9 +44,27 @@ func (Real) RunInput(ctx context.Context, input []byte, name string, args ...str
 	cmd.Stderr = &errb
 	err := cmd.Run()
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+		full := strings.TrimSpace(errb.String())
+		if Debug != nil {
+			Debug.Printf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, full)
+		}
+		err = fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, LastLine(full))
 	}
 	return out.Bytes(), errb.Bytes(), err
+}
+
+// LastLine returns the last non-empty line of a program's stderr, skipping the
+// "Run '... --help' for more information" hint docker appends after its error.
+func LastLine(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t == "" || (strings.HasPrefix(t, "Run '") && strings.Contains(t, "--help'")) {
+			continue
+		}
+		return t
+	}
+	return ""
 }
 
 func (Real) LookPath(name string) (string, error) { return exec.LookPath(name) }

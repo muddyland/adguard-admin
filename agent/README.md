@@ -161,3 +161,21 @@ From keepalived.conf(5) (Debian bookworm, keepalived 2.2.x), read 2026-10-23:
   the full `dns_bind` list (the wizard API takes a single address).
 - **`POST /v1/services/agent/restart` is refused** (404): an agent that
   restarts itself mid-request cannot answer.
+
+
+## Self-update and reinstall (contract section 9)
+
+| Endpoint | What it does |
+|---|---|
+| `POST /v1/self-update` `{"version","url","sha256"}` | Downloads the binary (64 MiB cap, 120 s), verifies the SHA-256, writes `<exe>.new` (0755) beside `os.Executable()` and renames it over the running binary. Replies `{"ok":true,"version":...,"restarting":true}` and exits 0 one second later when `INVOCATION_ID` is set (systemd `Restart=always` starts the new binary). Without systemd it replies `restarting:false` and asks for a manual restart. 409 on a checksum mismatch or when the version equals the running one; nothing is written on any failure. |
+| `POST /v1/adguard/reset` | Wipes the AdGuard install: docker removes `adguardhome`, `adguardhome-prev` and the `adguardhome-work` / `adguardhome-conf` volumes; bare-metal stops the unit and deletes `AdGuardHome.yaml` and `data/` under the install dir. Then clears the role's applied hash and wakes the converge loop, so the first-run wizard runs again with the control plane's credentials. 409 while a converge is in flight (the role's converge lock is tried, never waited on). |
+
+Probe robustness: the AdGuard role's HTTP client never follows redirects
+(`CheckRedirect` → `http.ErrUseLastResponse`). An unconfigured instance answers
+`/control/status` with a 302 to its install page; following it could land on
+an address the agent cannot reach and made a healthy container look silent.
+The wait-loop timeout now carries the last transport error.
+
+Command errors: `execx.Real` reports only the last meaningful stderr line
+(skipping docker's "Run '... --help'" hint); set `AGENT_DEBUG=1` on the service
+to log the full stderr of every failed command.

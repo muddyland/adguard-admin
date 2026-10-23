@@ -618,6 +618,9 @@ class AgentRead(BaseModel):
     info: Optional[dict] = None
     server_ids: list[int] = []
     load_balancer_ids: list[int] = []
+    update_available: bool = False
+    update_attempted_at: Optional[datetime] = None
+    update_error: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

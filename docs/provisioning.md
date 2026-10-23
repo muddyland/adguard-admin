@@ -76,6 +76,16 @@ enrollment is validated the same way.
   missing). Supported architectures: `amd64`, `arm64`, `arm` (armv7).
 - The control plane must reach the agent on its port (default **8443/tcp**).
 
+## Reusing a host that already ran AdGuard
+
+The agent does not adopt an existing AdGuard install. If the box still has an
+AdGuard container or native install from before, the agent finds it, cannot log
+in with the control plane's generated password, and reports `credentials
+rejected; the instance was configured before this agent managed it`. Either
+remove the old install (container, volumes, or `/opt/AdGuardHome`) before
+running the one-liner, or provision anyway and use **Reinstall AdGuard
+(wipe)** on the Servers page afterwards; see [Hosts](hosts.md#reinstalling-adguard-on-a-host).
+
 ## Servers added by URL
 
 Hosts without an agent still work: **Servers → + Add server** with a URL and

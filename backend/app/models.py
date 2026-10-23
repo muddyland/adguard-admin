@@ -392,6 +392,10 @@ class Agent(SQLModel, table=True):
     last_error: Optional[str] = None
     info: Optional[dict] = Field(default=None, sa_type=JSON)
     health: Optional[dict] = Field(default=None, sa_type=JSON)
+    # Self-update bookkeeping: when we last asked the agent to replace itself,
+    # and what it answered if it refused.
+    update_attempted_at: Optional[datetime] = None
+    update_error: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
 
 

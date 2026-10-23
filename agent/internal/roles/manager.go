@@ -206,6 +206,44 @@ func (m *Manager) Status(ctx context.Context, name string) (any, error) {
 	return e.role.Status(ctx, spec, c)
 }
 
+// TryLockConverge takes a role's converge lock without waiting, so an
+// operation that must not overlap a converge (a reset) can refuse instead of
+// queueing behind a long install. The returned function releases the lock.
+func (m *Manager) TryLockConverge(name string) (func(), bool) {
+	e, ok := m.entries[name]
+	if !ok || !e.convergeMu.TryLock() {
+		return nil, false
+	}
+	return e.convergeMu.Unlock, true
+}
+
+// ResetApplied forgets what a role has applied, so the next converge treats
+// the host as fresh. Persisted, like every status change.
+func (m *Manager) ResetApplied(name string) {
+	e, ok := m.entries[name]
+	if !ok {
+		return
+	}
+	m.mu.Lock()
+	e.common.AppliedHash, e.common.Version, e.common.Message = "", "", ""
+	e.common.State = "installing"
+	c := e.common
+	m.mu.Unlock()
+	if raw, err := json.Marshal(c); err == nil {
+		_ = config.WriteFileAtomic(filepath.Join(m.dirs.Status(), name+".json"), raw, 0o600)
+	}
+}
+
+// Wake asks a role's converge loop to run now.
+func (m *Manager) Wake(name string) {
+	if e, ok := m.entries[name]; ok {
+		select {
+		case e.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // Start launches one converge goroutine per role.
 func (m *Manager) Start(ctx context.Context) {
 	for name, e := range m.entries {

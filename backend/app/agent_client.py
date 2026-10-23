@@ -88,6 +88,17 @@ class AgentClient:
     async def adguard_update(self) -> dict:
         return await self._request("POST", "/v1/adguard/update")
 
+    async def adguard_reset(self) -> dict:
+        """Wipe the AdGuard instance on the host and re-run its first-run setup."""
+        return await self._request("POST", "/v1/adguard/reset")
+
+    async def self_update(self, version: str, url: str, sha256: str) -> dict:
+        """Ask the agent to replace its own binary; it restarts on success."""
+        return await self._request(
+            "POST", "/v1/self-update", json={"version": version, "url": url, "sha256": sha256},
+            timeout=180.0,
+        )
+
     async def drain(self, backend: str, *, undrain: bool = False, role: str = "dnsdist") -> dict:
         """Take a backend out of rotation on dnsdist or on the IPVS table (keepalived)."""
         action = "undrain" if undrain else "drain"

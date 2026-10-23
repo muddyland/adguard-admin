@@ -12,6 +12,9 @@ const zones = ref([])
 const msg = ref('')
 const error = ref('')
 const busyId = ref(null)
+// The agent build this control plane serves (null while unknown, false when
+// there is none — an API-only run has no AGENT_BIN_DIR).
+const manifest = ref(null)
 
 // Logs modal
 const logsTarget = ref(null)
@@ -38,6 +41,14 @@ async function load() {
   const [a, z] = await Promise.all([api.get('/agents'), api.get('/zones')])
   agents.value = a.data
   zones.value = z.data
+}
+
+async function loadManifest() {
+  try {
+    manifest.value = (await api.get('/agents/download/manifest')).data
+  } catch {
+    manifest.value = false
+  }
 }
 
 // ---- health helpers -------------------------------------------------------
@@ -133,6 +144,22 @@ async function runRestart() {
   }
 }
 
+async function updateAgent(a) {
+  const target = manifest.value?.version ? ` to ${manifest.value.version}` : ''
+  if (!confirm(`Update the agent on ${a.name}${target}? The agent restarts; AdGuard and the balancer keep running.`)) return
+  busyId.value = a.id
+  error.value = ''
+  try {
+    const { data } = await api.post(`/agents/${a.id}/update`)
+    agents.value = agents.value.map((x) => (x.id === a.id ? data : x))
+    msg.value = `${data.name}: agent update started — it restarts and reports its new version on the next refresh.`
+  } catch (e) {
+    error.value = `${a.name}: ${e.response?.data?.detail || 'agent update failed'}`
+  } finally {
+    busyId.value = null
+  }
+}
+
 async function renewCert(a) {
   if (!confirm(`Issue a new certificate for ${a.name}? The agent swaps it live; nothing restarts.`)) return
   busyId.value = a.id
@@ -165,13 +192,21 @@ async function remove(a) {
   }
 }
 
-onMounted(load)
+onMounted(() => { load(); loadManifest() })
 </script>
 
 <template>
   <div class="topbar">
     <h1>Hosts</h1>
-    <router-link v-if="auth.isEditor" class="btn btn-primary" to="/provision">+ Provision a host</router-link>
+    <div class="flex" style="gap:12px;align-items:center">
+      <span v-if="manifest && manifest.version" class="muted" title="Agent build served to new and updating hosts">
+        Agent available: <span class="mono">{{ manifest.version }}</span>
+      </span>
+      <span v-else-if="manifest === false" class="muted" title="AGENT_BIN_DIR is empty on this control plane">
+        No agent build on this control plane
+      </span>
+      <router-link v-if="auth.isEditor" class="btn btn-primary" to="/provision">+ Provision a host</router-link>
+    </div>
   </div>
   <div class="content">
     <div v-if="msg" class="alert alert-success" @click="msg = ''">{{ msg }}</div>
@@ -200,7 +235,14 @@ onMounted(load)
                 <span v-if="!(a.roles || []).length" class="muted">—</span>
               </div>
             </td>
-            <td class="mono">{{ a.version || '—' }}<div class="hint">{{ a.os }}/{{ a.arch }}</div></td>
+            <td>
+              <span class="mono">{{ a.version || '—' }}</span>
+              <span v-if="a.update_available" class="badge drift" style="margin-left:6px"
+                    :title="manifest && manifest.version ? `Update available: ${manifest.version}` : 'Update available'">update available</span>
+              <div class="hint">{{ a.os }}/{{ a.arch }}</div>
+              <div v-if="a.update_error" class="hint" style="color:var(--red)">{{ a.update_error }}</div>
+              <div v-else-if="a.update_attempted_at" class="hint">update attempted {{ fmt(a.update_attempted_at) }}</div>
+            </td>
             <td>
               <span v-if="load1(a) != null">{{ load1(a) }}</span>
               <span v-else class="muted">—</span>
@@ -234,6 +276,10 @@ onMounted(load)
                 <button class="menu-item" @click="openLogs(a)">View logs</button>
                 <template v-if="auth.isEditor">
                   <button class="menu-item" @click="openRestart(a)">Restart a service</button>
+                  <button class="menu-item" :disabled="busyId === a.id || manifest === false" @click="updateAgent(a)"
+                          :title="manifest === false ? 'No agent build on this control plane' : 'Replaces the agent binary and restarts it'">
+                    Update agent{{ a.update_available && manifest && manifest.version ? ` to ${manifest.version}` : '' }}
+                  </button>
                   <button class="menu-item" @click="renewCert(a)">Renew certificate</button>
                 </template>
                 <template v-if="auth.isAdmin">

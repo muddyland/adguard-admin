@@ -295,6 +295,22 @@ async function update(s) {
   } finally { updatingId.value = null }
 }
 
+async function reinstall(s) {
+  const ok = confirm(
+    `Reinstall AdGuard Home on ${s.name}?\n\n` +
+    `This deletes the instance's own settings, query log and statistics on that host, ` +
+    `then re-runs AdGuard's first-run setup. The control plane's records and settings are re-applied afterwards.`
+  )
+  if (!ok) return
+  try {
+    await api.post(`/servers/${s.id}/reinstall`)
+    msg.value = `Reinstall started on ${s.name}; the host re-runs AdGuard's first-run setup.`
+    await load()
+  } catch (e) {
+    msg.value = `Reinstall failed: ${e.response?.data?.detail || 'unknown error'}`
+  }
+}
+
 function fmt(d) { return d ? new Date(d).toLocaleString() : '—' }
 
 onMounted(load)
@@ -392,6 +408,7 @@ onMounted(load)
                   <button class="menu-item" @click="openImportFiltering(s)">Import filtering</button>
                   <div class="menu-divider"></div>
                   <button class="menu-item" @click="openEdit(s)">Edit</button>
+                  <button v-if="auth.isAdmin && s.agent_id != null" class="menu-item danger" @click="reinstall(s)">Reinstall AdGuard (wipe)</button>
                   <button class="menu-item danger" @click="remove(s)">Delete</button>
                 </template>
               </ActionMenu>

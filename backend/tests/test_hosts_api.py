@@ -52,6 +52,10 @@ class StubClient:
         StubClient.calls.append(("logs", service, lines))
         return ["line 1", "line 2"]
 
+    async def adguard_reset(self):
+        StubClient.calls.append(("reset",))
+        return {"ok": True}
+
 
 @pytest.fixture
 def stub(monkeypatch):
@@ -59,6 +63,9 @@ def stub(monkeypatch):
     StubClient.roles = {}
     monkeypatch.setattr(lb_router, "AgentClient", StubClient)
     monkeypatch.setattr(agents_router, "AgentClient", StubClient)
+    from app.routers import servers as servers_router
+
+    monkeypatch.setattr(servers_router, "AgentClient", StubClient)
     return StubClient
 
 
@@ -297,3 +304,55 @@ def test_provision_token_with_ipvs_mode(client, editor_headers, session, zone):
     assert r.status_code == 200
     lb = session.exec(__import__("sqlmodel").select(LoadBalancer)).one()
     assert lb.mode.value == "ipvs"
+
+
+# --------------------------------------------------------------------------- #
+# Agent updates and AdGuard reinstall
+# --------------------------------------------------------------------------- #
+def test_update_available_follows_the_shipped_manifest(client, viewer_headers, session, zone, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "agent_bin_dir", str(tmp_path))
+    agent = make_agent(session, zone=zone)
+    agent.version = "0.1.0"
+    session.add(agent)
+    session.commit()
+    assert client.get("/api/agents", headers=viewer_headers).json()[0]["update_available"] is False
+    (tmp_path / "adguard-admin-agent-linux-amd64").write_bytes(b"\x7fELF new")
+    (tmp_path / "VERSION").write_text("0.2.0\n")
+    assert client.get("/api/agents", headers=viewer_headers).json()[0]["update_available"] is True
+    agent.version = "0.2.0"
+    session.add(agent)
+    session.commit()
+    assert client.get("/api/agents", headers=viewer_headers).json()[0]["update_available"] is False
+
+
+def test_update_endpoint_pushes_and_records(client, editor_headers, viewer_headers, session, zone, monkeypatch):
+    from app import hosts
+
+    agent = make_agent(session, zone=zone)
+    calls = []
+
+    async def fake_update(agent_id):
+        calls.append(agent_id)
+        out = hosts.AgentOutcome(agent_id=agent_id, name="host-a", status=hosts.SyncStatus.online)
+        out.update_requested = True
+        hosts._record_agent(out)
+        return out
+
+    monkeypatch.setattr(agents_router, "update_agent_now", fake_update)
+    assert client.post(f"/api/agents/{agent.id}/update", headers=viewer_headers).status_code == 403
+    r = client.post(f"/api/agents/{agent.id}/update", headers=editor_headers)
+    assert r.status_code == 200 and calls == [agent.id]
+    assert r.json()["update_attempted_at"] is not None
+
+
+def test_reinstall_is_admin_only_and_needs_an_agent(client, admin_headers, editor_headers, session, zone, stub):
+    agent = make_agent(session, zone=zone)
+    managed = make_server(session, "dns-a", zone, agent)
+    direct = make_server(session, "direct", zone, url="http://10.0.0.20:3000")
+    assert client.post(f"/api/servers/{managed.id}/reinstall", headers=editor_headers).status_code == 403
+    assert client.post(f"/api/servers/{direct.id}/reinstall", headers=admin_headers).status_code == 409
+    r = client.post(f"/api/servers/{managed.id}/reinstall", headers=admin_headers)
+    assert r.status_code == 200 and ("reset",) in stub.calls
+    session.expire_all()
+    s = session.get(Server, managed.id)
+    assert s.status.value == "provisioning" and s.agent_state["message"] == "reinstall requested"

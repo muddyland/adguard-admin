@@ -21,6 +21,7 @@ import (
 	"adguard-admin/agent/internal/roles/dnsdist"
 	"adguard-admin/agent/internal/roles/ipvsbackend"
 	"adguard-admin/agent/internal/roles/keepalived"
+	"adguard-admin/agent/internal/selfupdate"
 	"adguard-admin/agent/internal/server"
 	"adguard-admin/agent/internal/services"
 )
@@ -128,6 +129,10 @@ func serve(d config.Dirs, logger *log.Logger) error {
 			return err
 		}
 	}
+	if os.Getenv("AGENT_DEBUG") != "" {
+		// Full stderr of failed commands; errors themselves carry one line.
+		execx.Debug = logger
+	}
 	host := services.Host{R: execx.Real{}}
 	mgr := roles.NewManager(d, logger,
 		adguard.New(host),
@@ -141,6 +146,9 @@ func serve(d config.Dirs, logger *log.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	mgr.Start(ctx)
-	srv := &server.Server{Dirs: d, Cfg: cfg, Host: host, Manager: mgr, Holder: holder, Logger: logger}
+	srv := &server.Server{
+		Dirs: d, Cfg: cfg, Host: host, Manager: mgr, Holder: holder, Logger: logger,
+		Updater: &selfupdate.Updater{Version: server.Version, Logger: logger},
+	}
 	return srv.ListenAndServe(ctx)
 }

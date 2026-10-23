@@ -563,3 +563,58 @@ Status: `{"state":"ready"|"error"|"stopped","desired_hash","applied_hash",
   no latency/outstanding/drop columns; the dnsdist statistics card is replaced
   by an "IPVS" card (services programmed, VIP owner); frontends card hidden.
 - Table: mode badge next to the name.
+
+## 9. Addendum: agent self-update, AdGuard reinstall, probe robustness
+
+### 9.1 Probe robustness (agent)
+
+The AdGuard role's HTTP client must **not follow redirects** (`CheckRedirect`
+returning `http.ErrUseLastResponse`): any HTTP response, including a 302 to a
+login or install page, means the server answered. The wait loop's timeout
+message carries the last transport error. The first-run check and the
+credential check already use endpoints that do not redirect.
+
+### 9.2 Agent self-update
+
+`POST /v1/self-update` (mTLS, from the control plane only):
+```json
+{"version":"0.2.0","url":"https://admin.example.com/api/agents/download/linux/amd64","sha256":"<hex>"}
+```
+The agent downloads `url` with a plain HTTPS/HTTP client (the same trust as
+enrollment: it is the control plane's own URL; integrity comes from the
+SHA-256 delivered over mTLS), limit 64 MiB, timeout 120 s; verifies the hash;
+writes the file next to the running executable (`os.Executable()`) as
+`<name>.new` with mode 0755; renames it over the current path; replies
+`{"ok":true,"version":"0.2.0","restarting":true}` and exits with status 0 one
+second later so systemd (`Restart=always`) starts the new binary. When not
+running under systemd (`INVOCATION_ID` unset) it still replaces the binary and
+replies `restarting:false` with a message to restart by hand. A hash mismatch
+or a version equal to the running one is a 409 with `{"error": ...}` and
+nothing is written. `GET /v1/info` already reports `agent_version`.
+
+Control plane: `Agent.update_attempted_at`, `Agent.update_error`. During
+`reconcile_agent`, when `AGENT_AUTO_UPDATE` (default true) is on, the download
+manifest has a version, the agent reports a different one, and the last
+attempt is older than `AGENT_UPDATE_RETRY_MINUTES` (default 30), the control
+plane posts a self-update and skips the rest of that pass (the agent is about
+to restart). `POST /api/agents/{id}/update` does the same on demand (editor).
+`AgentRead` gains `update_available: bool` (manifest version known and
+different), `update_attempted_at`, `update_error`. The Hosts page shows an
+"update available" badge next to the agent version and an **Update agent**
+action; the manifest version is shown in the page header.
+
+### 9.3 AdGuard reinstall (wipe)
+
+`POST /v1/adguard/reset` (mTLS): docker: stop and remove `adguardhome` and
+`adguardhome-prev`, remove the `adguardhome-work` and `adguardhome-conf`
+volumes; bare-metal: stop the service and delete `AdGuardHome.yaml` and the
+`data/` directory under the install dir. Then clear the role's applied hash
+and converge immediately, so the first-run wizard runs again with the
+control plane's credentials. Replies `{"ok":true}`; 409 while a converge is
+in flight.
+
+Control plane: `POST /api/servers/{id}/reinstall` (**admin**, audit-logged),
+409 for a server without an agent. UI: Servers row menu, admin only,
+"Reinstall AdGuard (wipe)" with a confirm that says the instance's own
+settings, query log and statistics on that host are deleted and the control
+plane's records and settings are re-applied.

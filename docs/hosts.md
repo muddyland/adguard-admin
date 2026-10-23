@@ -49,6 +49,33 @@ over mutual TLS**.
   generates locally (dnsdist API key and console key, VRRP password) stays in
   files with mode 0600 on the host.
 
+## Keeping agents current
+
+The control plane ships the agent build it was released with (the Hosts page
+header shows the version). When a host reports a different version, the
+control plane asks it to update itself: it hands the agent the download URL
+and the SHA-256 over the mutual-TLS channel, the agent fetches the binary,
+verifies the checksum, replaces itself and exits, and systemd restarts it on
+the new build. AdGuard and the balancer keep running throughout; the host
+shows a brief gap in its status and comes back with the new version.
+
+This is on by default (`AGENT_AUTO_UPDATE`); a refused or failed attempt is
+shown on the row and retried after `AGENT_UPDATE_RETRY_MINUTES`. **Update
+agent** in the row menu pushes it immediately. Hosts without systemd get the
+new binary but have to be restarted by hand, which the row's message says.
+
+## Reinstalling AdGuard on a host
+
+A host that already ran AdGuard before the agent arrived keeps its old
+configuration volume, including its old admin password, and the agent reports
+`credentials rejected; the instance was configured before this agent managed
+it` rather than guessing. **Reinstall AdGuard (wipe)** in the Servers row menu
+(admin only, audit-logged) removes that instance's container and volumes, or
+the native install's configuration and data, and re-runs the first-run setup
+with the control plane's credentials. The instance's own query log and
+statistics on that host are lost; the records, settings and filtering you
+manage here are re-applied on the next reconcile pass.
+
 ## The Hosts page
 
 | Column | Meaning |

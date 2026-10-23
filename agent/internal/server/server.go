@@ -24,6 +24,7 @@ import (
 	"adguard-admin/agent/internal/roles/adguard"
 	"adguard-admin/agent/internal/roles/dnsdist"
 	"adguard-admin/agent/internal/roles/keepalived"
+	"adguard-admin/agent/internal/selfupdate"
 	"adguard-admin/agent/internal/services"
 	"adguard-admin/agent/internal/sysinfo"
 )
@@ -39,6 +40,8 @@ type Server struct {
 	Manager *roles.Manager
 	Holder  *pki.Holder
 	Logger  *log.Logger
+	// Updater swaps the binary on POST /v1/self-update; nil builds a default.
+	Updater *selfupdate.Updater
 
 	renewMu    sync.Mutex
 	pendingKey *ecdsa.PrivateKey
@@ -52,6 +55,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/adguard", s.putRole("adguard"))
 	mux.HandleFunc("GET /v1/adguard", s.getRole("adguard"))
 	mux.HandleFunc("POST /v1/adguard/update", s.adguardUpdate)
+	mux.HandleFunc("POST /v1/adguard/reset", s.adguardReset)
+	mux.HandleFunc("POST /v1/self-update", s.selfUpdate)
 	mux.HandleFunc("/v1/adguard/api/", s.adguardProxy)
 	mux.HandleFunc("PUT /v1/dnsdist", s.putRole("dnsdist"))
 	mux.HandleFunc("GET /v1/dnsdist", s.getRole("dnsdist"))
@@ -214,6 +219,57 @@ func (s *Server) adguardUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"started": started, "message": msg})
+}
+
+// adguardReset wipes the install and lets the converge loop rebuild it from
+// the spec, so the first-run wizard runs again with the control plane's
+// credentials. Refused while a converge holds the role, rather than queued
+// behind it: the operator asked for a wipe now, not in ten minutes.
+func (s *Server) adguardReset(w http.ResponseWriter, r *http.Request) {
+	ar, spec := s.adguardRole()
+	if ar == nil || spec == nil {
+		writeErr(w, 409, errors.New("adguard is not managed on this host"))
+		return
+	}
+	unlock, ok := s.Manager.TryLockConverge("adguard")
+	if !ok {
+		writeErr(w, 409, errors.New("a converge is in flight for adguard; retry shortly"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	err := ar.Reset(ctx, spec)
+	unlock()
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.Logger.Printf("adguard: install wiped on request; converging from scratch")
+	s.Manager.ResetApplied("adguard")
+	s.Manager.Wake("adguard")
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// selfUpdate replaces the agent binary and, under systemd, exits one second
+// after replying so the service manager starts the new one.
+func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request) {
+	var req selfupdate.Request
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if s.Updater == nil {
+		s.Updater = &selfupdate.Updater{Version: Version, Logger: s.Logger}
+	}
+	resp, uerr := s.Updater.Apply(r.Context(), req)
+	if uerr != nil {
+		writeErr(w, uerr.Status, uerr.Err)
+		return
+	}
+	writeJSON(w, 200, resp)
+	if resp.Restarting {
+		s.Updater.ScheduleRestart()
+	}
 }
 
 var hopByHop = []string{"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade"}

@@ -5,11 +5,13 @@ from fastapi import APIRouter, HTTPException, status
 from sqlmodel import select
 
 from ..adguard_client import AdGuardClient, AdGuardError
+from ..agent_client import AgentClient, AgentError
 from ..certs import verify_for
 from ..config import settings
 from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
 from ..hosts import release_references
 from ..models import (
+    Agent,
     BlockedService,
     ConfigScope,
     DnsServerKind,
@@ -19,6 +21,7 @@ from ..models import (
     ForwardZone,
     RecordScope,
     Server,
+    SyncStatus,
     Upstream,
     Zone,
 )
@@ -410,6 +413,37 @@ def reveal_credentials(server_id: int, admin: RequireAdmin, session: SessionDep)
         "has_password": bool(server.password_enc),
         "url": server.url,
     }
+
+
+@router.post("/{server_id}/reinstall")
+async def reinstall(server_id: int, admin: RequireAdmin, session: SessionDep):
+    """Wipe the AdGuard instance on its host and re-run the first-run setup.
+
+    Admin-only and audit-logged: it deletes that instance's own settings,
+    query log and statistics. The control plane's records and settings are
+    re-applied by the next reconcile pass.
+    """
+    server = session.get(Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if server.agent_id is None:
+        raise HTTPException(status_code=409, detail="This server is not managed by a host agent")
+    agent = session.get(Agent, server.agent_id)
+    if not agent:
+        raise HTTPException(status_code=409, detail="This server's host no longer exists")
+    url, name = agent.url, server.name
+    server.status = SyncStatus.provisioning
+    server.in_sync = False
+    server.agent_state = {"state": "installing", "message": "reinstall requested"}
+    session.add(server)
+    session.commit()
+    logger.warning("Reinstall: user=%s (id=%s) wiped AdGuard on server %r (id=%s)", admin.username, admin.id, name, server_id)
+    try:
+        async with AgentClient(url) as client:
+            await client.adguard_reset()
+    except AgentError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True}
 
 
 @router.post("/{server_id}/test")
