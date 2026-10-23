@@ -5,6 +5,8 @@ the binary on a bare-metal box, the image behind a container — not just their 
 configuration. The **Updates** page shows every server's installed version, what's
 available, and who is responsible for installing it.
 
+![Updates](images/updates.png)
+
 ## Who performs the upgrade
 
 This is the one thing worth understanding before turning anything on, because it

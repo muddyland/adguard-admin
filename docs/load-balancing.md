@@ -47,6 +47,8 @@ host's dnsdist takes over with the same backend list. No extra machines.
 
 Dedicated balancer hosts work too: provision them with only the *dnsdist* role.
 
+![Load balancers](images/load-balancers.png)
+
 ## The shape (IPVS direct-routing mode)
 
 ```

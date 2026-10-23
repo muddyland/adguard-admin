@@ -7,7 +7,7 @@ import os
 import pytest
 
 from app.config import settings
-from app.models import Agent, LoadBalancer, LoadBalancerBackend, Server
+from app.models import Agent, LbMode, LoadBalancer, LoadBalancerBackend, Server
 from app.routers import agents as agents_router
 from app.routers import loadbalancers as lb_router
 from tests.test_hosts import make_agent, make_lb, make_server
@@ -252,6 +252,21 @@ def test_ipvs_mode_needs_vip_and_one_mode_per_zone(client, editor_headers, sessi
     assert r.status_code == 201
     # Switching one of them alone is refused too.
     assert client.patch(f"/api/load-balancers/{lb['id']}", json={"mode": "dnsdist"}, headers=editor_headers).status_code == 409
+
+
+def test_ipvs_live_state_reads_keepalived_only(client, editor_headers, session, zone, stub):
+    """An ipvs host runs no dnsdist, so the live read must not ask for it
+    (it used to, and every ipvs detail panel showed a 502)."""
+    zone.vip = "10.0.0.53/24"
+    session.add(zone)
+    session.commit()
+    agent = make_agent(session, zone=zone)
+    make_server(session, "dns-a", zone, agent)
+    lb = make_lb(session, "lb", zone, agent, mode=LbMode.ipvs)
+    stub.roles["keepalived"] = {"state": "ready", "vip_owner": True, "ipvs": {"present": True, "director": True, "backends": []}}
+    r = client.get(f"/api/load-balancers/{lb.id}/state", headers=editor_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["keepalived"]["ipvs"]["director"] is True and r.json()["dnsdist"] is None
 
 
 def test_ipvs_drain_restart_and_delete_target_keepalived(client, editor_headers, session, zone, stub):

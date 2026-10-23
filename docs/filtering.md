@@ -9,6 +9,8 @@ in scope during [reconciliation](concepts.md#reconciliation).
 > filtering** enabled (set it on the [Servers](servers.md#per-server-options) page).
 > Servers without it keep their own filtering config untouched.
 
+![Filtering](images/filtering.png)
+
 ## Blocklists
 
 A blocklist is a subscription to a hosts/adblock-syntax list that AdGuard fetches and

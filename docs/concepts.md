@@ -20,7 +20,7 @@ A **zone** is a logical group of servers — `home`, `cloud`, `iot-vlan`, `branc
 Zones do two jobs:
 
 - They're the unit you **scope records and settings to** (see below).
-- They're a **filter** everywhere — dashboard metrics, the query log, and server lists
+- They're a **filter** everywhere — the Dashboard and Traffic pages, the query log, and server lists
   can all be narrowed to a single zone.
 
 A zone can have zero servers (handy when planning) and a server belongs to at most one

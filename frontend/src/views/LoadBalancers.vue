@@ -509,6 +509,7 @@ onMounted(load)
           <h2>{{ selected.name }} — backends</h2>
           <span class="muted" style="font-size:12px">
             <template v-if="liveAt">live · {{ liveAt.toLocaleTimeString() }}</template>
+            <template v-else-if="liveError">stored state · live read failed</template>
             <template v-else>loading live data…</template>
           </span>
         </div>

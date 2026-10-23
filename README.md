@@ -60,6 +60,10 @@ server comes back online.
 | [![DNS records](docs/images/records.png)](docs/images/records.png) | [![DNS settings](docs/images/dns-settings.png)](docs/images/dns-settings.png) |
 | **Servers** — status, version, sync state | **Provisioning** — one-line host installs |
 | [![Servers](docs/images/servers.png)](docs/images/servers.png) | [![Provisioning](docs/images/provision.png)](docs/images/provision.png) |
+| **Hosts** — agents, roles, load, disk, certificates | **Load balancers** — VIP owner, IPVS backends, diagnostics |
+| [![Hosts](docs/images/hosts.png)](docs/images/hosts.png) | [![Load balancers](docs/images/load-balancers.png)](docs/images/load-balancers.png) |
+| **Traffic** — history, per-server totals, top lists | **Updates** — AdGuard Home upgrades, rolling and scheduled |
+| [![Traffic](docs/images/traffic.png)](docs/images/traffic.png) | [![Updates](docs/images/updates.png)](docs/images/updates.png) |
 
 ## Documentation
 

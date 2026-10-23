@@ -18,7 +18,7 @@ from ..config import settings
 from ..deps import CurrentUser, RequireAdmin, RequireEditor, SessionDep
 from .. import agent_bin
 from ..hosts import reconcile_agent, release_references, update_agent_now
-from ..models import Agent, LoadBalancer, Server, SyncStatus, Zone
+from ..models import Agent, LbMode, LoadBalancer, Server, SyncStatus, Zone
 from ..pki import cert_not_after, get_pki, sign_agent_csr
 from ..schemas import AgentLogs, AgentRead, AgentServiceResult, AgentUpdate
 
@@ -31,12 +31,17 @@ ARCHES = agent_bin.ARCHES
 
 def to_read(session, agent: Agent) -> AgentRead:
     server_ids = list(session.exec(select(Server.id).where(Server.agent_id == agent.id)).all())
-    lb_ids = list(session.exec(select(LoadBalancer.id).where(LoadBalancer.agent_id == agent.id)).all())
+    lbs = list(session.exec(select(LoadBalancer).where(LoadBalancer.agent_id == agent.id)).all())
+    lb_ids = [lb.id for lb in lbs]
     roles = []
     if server_ids:
         roles.append("adguard")
-    if lb_ids:
+    # The balancer role is named after what actually runs on the host: dnsdist
+    # in dnsdist mode, keepalived (VRRP + IPVS) in ipvs mode.
+    if any(lb.mode == LbMode.dnsdist for lb in lbs):
         roles.append("dnsdist")
+    if any(lb.mode == LbMode.ipvs for lb in lbs):
+        roles.append("keepalived")
     item = AgentRead.model_validate(agent, from_attributes=True)
     item.roles = roles
     item.server_ids = server_ids

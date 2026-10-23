@@ -6,6 +6,8 @@ thing the control plane talks to on a managed box, and it is reachable **only
 over mutual TLS**.
 
 
+![Hosts](images/hosts.png)
+
 ## What the agent does
 
 - **Converges roles.** The control plane sends each role a *desired state*

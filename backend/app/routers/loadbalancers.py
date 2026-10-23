@@ -184,13 +184,19 @@ async def live_state(lb_id: int, _: CurrentUser, session: SessionDep):
     url = agent.url
     session.commit()
     out = LoadBalancerState()
+    # In ipvs mode the host runs no dnsdist, so keepalived is the required
+    # read and dnsdist is skipped; in dnsdist mode it is the other way round
+    # (keepalived only exists when the zone has a VIP).
     try:
         async with AgentClient(url) as client:
-            out.dnsdist = await client.get_role("dnsdist")
-            try:
+            if lb.mode == LbMode.ipvs:
                 out.keepalived = await client.get_role("keepalived")
-            except AgentError:
-                out.keepalived = None
+            else:
+                out.dnsdist = await client.get_role("dnsdist")
+                try:
+                    out.keepalived = await client.get_role("keepalived")
+                except AgentError:
+                    out.keepalived = None
     except AgentError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return out
