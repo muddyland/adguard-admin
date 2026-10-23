@@ -128,7 +128,14 @@ test:agent:
     GOFLAGS: "-buildvcs=false"
   script:
     - cd agent
-    - test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files need formatting"; exit 1; }
+    # A plain-scalar line with "gofmt: ..." in it is parsed by YAML as a
+    # mapping, which GitLab rejects; hence the block.
+    - |
+      if [ -n "$(gofmt -l .)" ]; then
+        gofmt -l .
+        echo "gofmt - the files above need formatting"
+        exit 1
+      fi
     - go vet ./...
     - go test ./...
     # The image build cross-compiles for three architectures; make sure that
