@@ -108,8 +108,15 @@ async def test_server_without_client_cert_is_rejected(material):
     try:
         ca_file = pki.materialize(material)[0]
         async with httpx.AsyncClient(verify=str(ca_file)) as plain:
-            with pytest.raises(httpx.HTTPError):
+            # TLS 1.3 sends the server's "certificate required" alert after the
+            # client already considers the handshake done, so it races the
+            # request: caught while connecting it arrives wrapped in an httpx
+            # error, caught on the response read httpcore lets the raw
+            # ssl.SSLError through. Either way the caller gets no data.
+            with pytest.raises((httpx.HTTPError, ssl.SSLError)) as exc:
                 await plain.get(url + "/v1/info")
+            if isinstance(exc.value, ssl.SSLError):
+                assert "CERTIFICATE_REQUIRED" in str(exc.value).upper(), exc.value
     finally:
         srv.shutdown()
 
