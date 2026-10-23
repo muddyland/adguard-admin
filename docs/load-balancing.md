@@ -180,6 +180,15 @@ everyone.
   queries to the VIP are answered by the VIP owner's own AdGuard alone, so
   nothing is balanced yet. The loopback VIP and ARP settings are per network
   namespace and need nothing on the node.
+- **Unprivileged containers cannot be IPVS directors.** Writing the IPVS
+  table needs `CAP_NET_ADMIN` in the host's own namespace, which an
+  unprivileged container's root never has; keepalived logs
+  `IPVS cmd IP_VS_SO_SET_ADD ... Permission denied (you must be root)` on every
+  call and the balancer shows exactly that. Run the balancer role on a
+  privileged container or a VM. Backends only need the loopback VIP and the
+  ARP sysctls, which work unprivileged, so two privileged directors plus
+  unprivileged AdGuard hosts is a sound layout. dnsdist mode has no such
+  requirement.
 - The VIP must be in a subnet the hosts share; it is held by one host at a
   time and must not be handed out by DHCP.
 - dnsdist and keepalived are installed by the agent: dnsdist as the official

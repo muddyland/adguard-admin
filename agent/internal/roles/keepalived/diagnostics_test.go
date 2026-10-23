@@ -106,9 +106,10 @@ func TestDiagnosticsFromProcRootAndFakeExec(t *testing.T) {
 	want := map[string]any{
 		"ipvsadm": false, "module_loaded": false, "proc_ip_vs": false,
 		"config_has_virtual_servers": false, "keepalived_running": false,
-		"modprobe_error": "modprobe: FATAL: Module ip_vs not found in directory /lib/modules/6.1.0",
-		"container":      "",
-		"checked_at":     "2026-10-23T03:10:00Z",
+		"modprobe_error":         "modprobe: FATAL: Module ip_vs not found in directory /lib/modules/6.1.0",
+		"container":              "",
+		"ipvs_permission_denied": false,
+		"checked_at":             "2026-10-23T03:10:00Z",
 	}
 	for k, v := range want {
 		if d[k] != v {
@@ -271,5 +272,36 @@ func TestIPVSStatusWithoutIpvsadmOrModule(t *testing.T) {
 		if c.Name == "ipvsadm" {
 			t.Fatal("ipvsadm must not be run when LookPath says it is absent")
 		}
+	}
+}
+
+func TestDiagnosticsSpotIPVSPermissionDenied(t *testing.T) {
+	// keepalived runs, the module is loaded, ipvsadm exists, but the kernel
+	// refuses every IPVS write: an unprivileged container.
+	fake := &execx.Fake{Programs: map[string]bool{"systemctl": true, "ipvsadm": true, "journalctl": true},
+		Handler: func(name string, args []string) execx.Result {
+			switch name {
+			case "systemctl":
+				return systemctlHandler(true)(name, args)
+			case "journalctl":
+				return execx.Result{Stdout: "2026-10-23T03:16:55+00:00 h Keepalived_healthcheckers[1]: Initializing ipvs\n" +
+					"2026-10-23T03:16:55+00:00 h Keepalived_healthcheckers[1]: IPVS cmd IP_VS_SO_SET_ADD(1154) error: Permission denied (you must be root)(1) (192.168.2.55:udp:53)\n"}
+			}
+			return execx.Result{}
+		}}
+	r, _ := procRole(t, fake, true)
+	d := r.diagnostics(context.Background())
+	if d["ipvs_permission_denied"] != true {
+		t.Fatalf("expected ipvs_permission_denied, got %v", d)
+	}
+	// A clean log does not trip it.
+	fake.Handler = func(name string, args []string) execx.Result {
+		if name == "systemctl" {
+			return systemctlHandler(true)(name, args)
+		}
+		return execx.Result{Stdout: "2026-10-23T03:16:55+00:00 h Keepalived[1]: Startup complete\n"}
+	}
+	if d := r.diagnostics(context.Background()); d["ipvs_permission_denied"] != false {
+		t.Fatalf("clean log flagged: %v", d)
 	}
 }

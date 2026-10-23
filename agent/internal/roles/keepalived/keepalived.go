@@ -615,8 +615,30 @@ func (r *Role) diagnostics(ctx context.Context) map[string]any {
 		"keepalived_running":         r.Host.UnitState(ctx, UnitName).Active,
 		"modprobe_error":             modprobeErr,
 		"container":                  r.containerKind(),
+		"ipvs_permission_denied":     r.ipvsPermissionDenied(ctx),
 		"checked_at":                 r.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+// ipvsPermissionDenied reports whether keepalived's recent log shows the
+// kernel refusing IPVS writes. That is what an unprivileged container looks
+// like: root inside it lacks CAP_NET_ADMIN in the host's namespace, so every
+// IP_VS_SO_SET_* call fails with "Permission denied (you must be root)" while
+// VRRP and the health checks carry on as if nothing were wrong.
+func (r *Role) ipvsPermissionDenied(ctx context.Context) bool {
+	if _, err := r.Host.R.LookPath("journalctl"); err != nil {
+		return false
+	}
+	out, _, err := r.Host.R.Run(ctx, "journalctl", "-u", UnitName, "-n", "60", "--no-pager", "-o", "cat")
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.Contains(l, "IPVS cmd") && strings.Contains(l, "Permission denied") {
+			return true
+		}
+	}
+	return false
 }
 
 // ipvsStatus reads the kernel table and sums each backend's services.

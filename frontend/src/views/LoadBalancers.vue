@@ -169,6 +169,13 @@ const ipvsHint = computed(() => {
     }
     return `the ip_vs kernel module is not loaded${d.modprobe_error ? ` (modprobe error: ${d.modprobe_error})` : ''}; check that the kernel ships it.`
   }
+  if (d.ipvs_permission_denied) {
+    // IPVS writes need CAP_NET_ADMIN in the host's own namespace, which an
+    // unprivileged container's root never has. keepalived logs it per call.
+    const where = d.container ? `an unprivileged ${d.container} container` : 'this host'
+    return `keepalived is refused by the kernel ("Permission denied") when programming IPVS: ${where} cannot write the IPVS table. `
+      + 'Make the balancer host privileged (or a VM), or switch this zone to dnsdist mode. Backends can stay unprivileged.'
+  }
   if (d.ipvsadm === false) return 'ipvsadm is not installed; the agent installs it with keepalived, see the agent log.'
   if (d.config_has_virtual_servers === false) return 'the rendered keepalived config has no virtual_server block: the zone VIP or mode changed and the host has not converged yet.'
   if (d.keepalived_running === false) return 'keepalived is not running on this host; see its log.'
