@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON
+from sqlalchemy import JSON, Index
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -176,6 +176,9 @@ class Server(SQLModel, table=True):
     agent_state: Optional[dict] = Field(default=None, sa_type=JSON)
     # What the zone's balancers currently think of this backend.
     lb_state: Optional[dict] = Field(default=None, sa_type=JSON)
+    # The last /control/stats the collector read: window totals and top lists,
+    # so the Traffic page never has to ask the server itself (see app.telemetry).
+    stats_snapshot: Optional[dict] = Field(default=None, sa_type=JSON)
 
     # --- Automatic AdGuard Home upgrades ---------------------------------- #
     # Opt-in: keep this server's AdGuard Home on the latest release.
@@ -446,6 +449,21 @@ class LoadBalancer(SQLModel, table=True):
     state: Optional[dict] = Field(default=None, sa_type=JSON)
     keepalived_state: Optional[dict] = Field(default=None, sa_type=JSON)
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class MetricSample(SQLModel, table=True):
+    """One reading of one entity, taken by the collector each reconcile cycle.
+
+    `values` is a flat name -> number map (see app.telemetry for the names);
+    `resolution` is "1m" for raw cycles and "1h" for the hourly rollups.
+    """
+    __table_args__ = (Index("ix_metricsample_lookup", "kind", "entity_id", "resolution", "ts"),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ts: datetime = Field(index=True)
+    resolution: str = Field(default="1m")
+    kind: str                                  # server | agent | load_balancer
+    entity_id: int
+    values: dict = Field(default_factory=dict, sa_type=JSON)
 
 
 class LoadBalancerBackend(SQLModel, table=True):

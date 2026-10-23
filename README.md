@@ -37,8 +37,11 @@ server comes back online.
   their config: bare-metal boxes are upgraded over AdGuard's own control API on a
   schedule (with an optional maintenance window), and Docker hosts get a one-line
   on-box updater that pulls the image and recreates the container.
-- **Dashboard metrics** — combined query/blocked stats across the fleet, filterable by
-  zone and server.
+- **Dashboard and traffic history** — a needs-attention list, per-zone health and a
+  queries/blocked curve from the control plane's own sample store; the Traffic page
+  has per-server totals and top lists, filterable by zone and server.
+- **Prometheus** — one token-protected `/metrics` endpoint exposes the whole fleet
+  (servers, hosts, balancers, backends); nothing to install on the hosts.
 - **Users & RBAC** — `admin` / `editor` / `viewer` roles.
 - **OIDC single sign-on** — any OpenID Connect provider, alongside local accounts.
 - **Home Assistant** — an AdGuard-compatible `/control` API means Home Assistant's
@@ -51,7 +54,7 @@ server comes back online.
 
 |  |  |
 |---|---|
-| **Dashboard** — fleet-wide query/blocked metrics | **Query log** — combined, searchable, per-server |
+| **Dashboard** — what needs attention, zone health, traffic | **Query log** — combined, searchable, per-server |
 | [![Dashboard](docs/images/dashboard.png)](docs/images/dashboard.png) | [![Query log](docs/images/query-log.png)](docs/images/query-log.png) |
 | **DNS records** — global & zone-scoped rewrites | **DNS settings** — upstreams & forward zones |
 | [![DNS records](docs/images/records.png)](docs/images/records.png) | [![DNS settings](docs/images/dns-settings.png)](docs/images/dns-settings.png) |
@@ -74,7 +77,8 @@ Full guides live in [`docs/`](docs/README.md):
 | [Hosts](docs/hosts.md) | The agent: what it runs, its security model, the Hosts page |
 | [Load balancing](docs/load-balancing.md) | dnsdist balancers, zone virtual IPs, what the stats mean |
 | [Updates](docs/updates.md) | Keeping the AdGuard Home containers/binaries themselves up to date |
-| [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
+| [Dashboard, traffic & query log](docs/dashboard-and-query-log.md) | The health view, traffic history and the combined query log |
+| [Observability](docs/observability.md) | The sample store, retention, and scraping the fleet with Prometheus |
 | [Users & SSO](docs/users-and-sso.md) | Roles and OIDC single sign-on |
 | [Home Assistant](docs/home-assistant.md) | Driving the fleet from Home Assistant's built-in AdGuard integration |
 | [Configuration reference](docs/configuration.md) | Every environment variable |
@@ -250,6 +254,8 @@ docker run --rm adguard-admin-test ruff check app tests
 | POST | `/api/auth/token` | — | Local login (returns JWT) |
 | GET | `/api/auth/oidc/login` | — | Start OIDC flow |
 | GET | `/api/stats` | viewer | Dashboard counters |
+| GET | `/api/metrics[/overview\|/series\|/attention]` | viewer | Traffic totals and top lists, zone rollups, time series, the needs-attention list |
+| GET | `/metrics` | bearer token | Prometheus exposition of the fleet (see [observability](docs/observability.md)) |
 | CRUD | `/api/zones` | editor | Manage zones |
 | CRUD | `/api/servers` | editor | Manage servers (`/test` probes a server) |
 | CRUD | `/api/records` | editor | Manage DNS records |

@@ -747,6 +747,15 @@ class SyncManager:
         if not dry_run and only_server_id is None:
             self.last_results = results
             self.last_run = datetime.now(timezone.utc)
+            # Samples ride on the cycle: every server and agent was just asked
+            # for its state, so one more stats call per server is cheap, and
+            # the balancer rows are at their freshest.
+            from . import telemetry
+
+            try:
+                await telemetry.collect_all(limit=max(1, settings.sync_max_concurrency))
+            except Exception:
+                logger.exception("metrics collection failed")
         return results
 
     async def _run_periodic_cycle(self) -> None:

@@ -69,6 +69,7 @@ _ADDED_COLUMNS = {
         "expose_web_ui": "BOOLEAN DEFAULT 0",
         "agent_state": "JSON",
         "lb_state": "JSON",
+        "stats_snapshot": "JSON",
     },
     "zone": {
         "vip": "TEXT",

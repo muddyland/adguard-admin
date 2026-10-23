@@ -1,83 +1,70 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+// The Dashboard is a health view: what needs attention, how the fleet and
+// each zone are doing, and the traffic curve. Everything here is read from
+// the control plane's own store (one sample per reconcile cycle), so the page
+// loads instantly and never waits on a slow server. Per-server detail and the
+// top lists live on the Traffic page.
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import api from '../api'
 import { useAuth } from '../stores/auth'
 import ZoneBadge from '../components/ZoneBadge.vue'
+import SeriesChart from '../components/SeriesChart.vue'
 
 const auth = useAuth()
 const stats = ref(null)
-const servers = ref([])
 const zones = ref([])
-const metrics = ref(null)
+const servers = ref([])
 const agents = ref([])
 const lbs = ref([])
-const metricsLoading = ref(false)
+const overview = ref(null)
+const attention = ref([])
+const series = ref(null)
+const range = ref('24h')
+const chartZone = ref('')
 const syncing = ref(false)
 const msg = ref('')
+const loading = ref(true)
+let timer = null
 
-// Filters for the traffic metrics section
-const filterZone = ref('')
-const filterServer = ref('')
-
-// Server dropdown options narrow to the selected zone.
-const serverOptions = computed(() =>
-  filterZone.value ? servers.value.filter((s) => String(s.zone_id) === filterZone.value) : servers.value
-)
-
-const zoneName = (id) => zones.value.find((z) => z.id === id)?.name || 'Unzoned'
-const num = (n) => (n ?? 0).toLocaleString()
+const SERIES = [
+  { key: 'qps', label: 'Queries/s', color: 'var(--chart-queries)' },
+  { key: 'bps', label: 'Blocked/s', color: 'var(--chart-blocked)' },
+]
+const RANGES = [['1h', '1 hour'], ['6h', '6 hours'], ['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']]
+const RANGE_SECONDS = { '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 }
 
 async function loadBase() {
-  const [s, sv, z] = await Promise.all([api.get('/stats'), api.get('/servers'), api.get('/zones')])
+  const [s, z, sv] = await Promise.all([api.get('/stats'), api.get('/zones'), api.get('/servers')])
   stats.value = s.data
-  servers.value = sv.data
   zones.value = z.data
-  // Hosts and balancers are optional context; an older backend simply has none.
-  const [a, l] = await Promise.allSettled([api.get('/agents'), api.get('/load-balancers')])
+  servers.value = sv.data
+  const [a, l, o, att] = await Promise.allSettled([
+    api.get('/agents'), api.get('/load-balancers'), api.get('/metrics/overview'), api.get('/metrics/attention'),
+  ])
   agents.value = a.status === 'fulfilled' ? a.value.data : []
   lbs.value = l.status === 'fulfilled' ? l.value.data : []
+  overview.value = o.status === 'fulfilled' ? o.value.data : null
+  attention.value = att.status === 'fulfilled' ? att.value.data : []
 }
 
-// One tile per zone that has a VIP: who holds it, how busy it is, how many backends are up.
-const vipZones = computed(() => zones.value.filter((z) => z.vip))
-function vipTile(z) {
-  const zoneLbs = lbs.value.filter((l) => l.zone_id === z.id)
-  const owner = zoneLbs.find((l) => l.keepalived_state?.vip_owner) || null
-  const src = owner || zoneLbs[0] || null
-  const backends = src?.backends || []
-  const live = backends.filter((b) => b.live)
-  return {
-    owner: owner ? (agents.value.find((a) => a.id === owner.agent_id)?.name || owner.name) : null,
-    balancers: zoneLbs.length,
-    qps: live.length ? live.reduce((n, b) => n + Number(b.live.qps || 0), 0) : null,
-    up: backends.filter((b) => b.live?.state === 'up' && !b.live?.drained).length,
-    total: backends.length,
-    status: src?.status || 'unknown',
-  }
+async function loadSeries() {
+  const params = { range: range.value }
+  if (chartZone.value) params.zone_id = Number(chartZone.value)
+  try { series.value = (await api.get('/metrics/series', { params })).data } catch { series.value = null }
 }
 
-async function loadMetrics() {
-  metricsLoading.value = true
-  try {
-    const params = {}
-    if (filterZone.value) params.zone_id = Number(filterZone.value)
-    if (filterServer.value) params.server_id = Number(filterServer.value)
-    metrics.value = (await api.get('/metrics', { params })).data
-  } finally {
-    metricsLoading.value = false
-  }
+async function refresh() {
+  try { await Promise.all([loadBase(), loadSeries()]) } finally { loading.value = false }
 }
 
-// Changing the zone clears a now-irrelevant server selection.
-watch(filterZone, () => { filterServer.value = '' })
-watch([filterZone, filterServer], loadMetrics)
+watch([range, chartZone], loadSeries)
 
 async function syncNow() {
   syncing.value = true
   msg.value = ''
   try {
     await api.post('/sync/run')
-    await Promise.all([loadBase(), loadMetrics()])
+    await refresh()
     msg.value = 'Reconciliation complete'
   } catch (e) {
     msg.value = e.response?.data?.detail || 'Sync failed'
@@ -86,189 +73,169 @@ async function syncNow() {
   }
 }
 
-function fmt(d) { return d ? new Date(d).toLocaleString() : '—' }
+onMounted(async () => {
+  await refresh()
+  timer = setInterval(refresh, 60000)
+})
+onBeforeUnmount(() => timer && clearInterval(timer))
 
-onMounted(async () => { await loadBase(); await loadMetrics() })
+// ---- derived ---------------------------------------------------------------
+const agentName = (id) => agents.value.find((a) => a.id === id)?.name || null
+const zoneTraffic = (zoneId) => overview.value?.zones?.find((z) => z.zone_id === zoneId) || null
+function zoneCard(z) {
+  const zoneLbs = lbs.value.filter((l) => l.zone_id === z.id)
+  const owner = zoneLbs.find((l) => l.keepalived_state?.vip_owner) || null
+  const src = owner || zoneLbs[0] || null
+  const backends = src?.backends || []
+  const t = zoneTraffic(z.id)
+  const zoneServers = servers.value.filter((s) => s.zone_id === z.id && s.enabled !== false)
+  return {
+    traffic: t,
+    owner: owner ? (agentName(owner.agent_id) || owner.name) : null,
+    balancers: zoneLbs.length,
+    mode: zoneLbs[0]?.mode || null,
+    backendsUp: backends.filter((b) => b.live?.state === 'up' && !b.live?.drained).length,
+    backendsTotal: backends.length,
+    servers: zoneServers.length,
+    serversOnline: zoneServers.filter((s) => s.status === 'online').length,
+  }
+}
+const num = (n) => (n == null ? '—' : Number(n).toLocaleString())
+const fixed = (n, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
+function fmt(d) { return d ? new Date(d).toLocaleString() : '—' }
+function ago(d) {
+  if (!d) return '—'
+  const s = Math.max(0, (Date.now() - new Date(d).getTime()) / 1000)
+  return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`
+}
+const critical = computed(() => attention.value.filter((i) => i.severity === 'critical').length)
+const warnings = computed(() => attention.value.filter((i) => i.severity === 'warning').length)
+const tiles = computed(() => {
+  const s = stats.value || {}
+  const list = [
+    { label: 'Servers online', value: s.servers_online ?? 0, of: s.servers ?? 0, link: '/servers' },
+    { label: 'Servers in sync', value: s.servers_in_sync ?? 0, of: s.servers ?? 0, link: '/servers' },
+  ]
+  if (s.agents != null) list.push({ label: 'Hosts online', value: s.agents_online ?? 0, of: s.agents, link: '/hosts' })
+  if (s.load_balancers != null) list.push({ label: 'Balancers in sync', value: s.load_balancers_in_sync ?? 0, of: s.load_balancers, link: '/load-balancers' })
+  return list
+})
 </script>
 
 <template>
   <div class="topbar">
     <h1>Dashboard</h1>
-    <button v-if="auth.isEditor" class="btn btn-primary" :disabled="syncing" @click="syncNow">
-      <span v-if="syncing" class="spinner"></span>
-      <span>Sync now</span>
-    </button>
+    <div class="flex" style="gap:10px;align-items:center">
+      <span v-if="stats" class="muted" :title="fmt(stats.last_sync)">Last sync {{ ago(stats.last_sync) }}</span>
+      <button v-if="auth.isEditor" class="btn btn-primary" :disabled="syncing" @click="syncNow">
+        <span v-if="syncing" class="spinner"></span>
+        <span>Sync now</span>
+      </button>
+    </div>
   </div>
   <div class="content" v-if="stats">
     <div v-if="msg" class="alert alert-success">{{ msg }}</div>
 
-    <!-- Fleet overview -->
-    <div class="stats-grid">
-      <div class="stat"><div class="value">{{ stats.zones }}</div><div class="label">Zones</div></div>
+    <!-- Needs attention -->
+    <div class="card attention" :class="critical ? 'has-critical' : warnings ? 'has-warning' : 'all-clear'" style="margin-bottom:24px">
+      <div class="card-header">
+        <h2>
+          <span v-if="!attention.length">All clear</span>
+          <span v-else>Needs attention</span>
+        </h2>
+        <span class="muted" v-if="attention.length">{{ critical }} critical · {{ warnings }} warning{{ warnings === 1 ? '' : 's' }}</span>
+        <span class="muted" v-else>{{ stats.servers_online }} of {{ stats.servers }} servers reporting</span>
+      </div>
+      <div v-if="attention.length" class="attention-list">
+        <router-link v-for="(i, idx) in attention" :key="idx" :to="i.link" class="attention-item">
+          <span class="sev-dot" :class="i.severity"></span>
+          <span class="attention-kind">{{ i.kind.replace('_', ' ') }}</span>
+          <strong>{{ i.name }}</strong>
+          <span class="attention-msg">{{ i.message }}</span>
+        </router-link>
+      </div>
+      <div v-else class="hint" style="padding:0 16px 14px">Every server, host and balancer is online and in sync.</div>
+    </div>
+
+    <!-- Fleet -->
+    <div class="stats-grid stats-grid-compact">
+      <router-link v-for="t in tiles" :key="t.label" :to="t.link" class="stat stat-link">
+        <div class="value" :class="t.of ? (t.value === t.of ? 'green' : 'red') : ''">{{ t.value }}<span class="muted" style="font-size:18px">/{{ t.of }}</span></div>
+        <div class="label">{{ t.label }}</div>
+      </router-link>
       <div class="stat">
-        <div class="value green">{{ stats.servers_online }}<span class="muted" style="font-size:18px">/{{ stats.servers }}</span></div>
-        <div class="label">Servers online</div>
+        <div class="value">{{ overview?.fleet?.qps == null ? '—' : fixed(overview.fleet.qps) }}</div>
+        <div class="label">Queries/s now</div>
       </div>
       <div class="stat">
-        <div class="value" :class="stats.servers_in_sync === stats.servers ? 'green' : 'red'">{{ stats.servers_in_sync }}</div>
-        <div class="label">Servers in sync</div>
-      </div>
-      <div class="stat"><div class="value">{{ stats.records }}</div><div class="label">DNS records</div></div>
-      <div class="stat"><div class="value">{{ stats.records_global }}</div><div class="label">Global records</div></div>
-      <div class="stat" v-if="stats.agents != null">
-        <div class="value" :class="stats.agents && stats.agents_online === stats.agents ? 'green' : (stats.agents ? 'red' : '')">{{ stats.agents_online ?? 0 }}<span class="muted" style="font-size:18px">/{{ stats.agents }}</span></div>
-        <div class="label">Hosts online</div>
-      </div>
-      <div class="stat" v-if="stats.load_balancers != null">
-        <div class="value" :class="stats.load_balancers && stats.load_balancers_in_sync === stats.load_balancers ? 'green' : (stats.load_balancers ? 'red' : '')">{{ stats.load_balancers_in_sync ?? 0 }}<span class="muted" style="font-size:18px">/{{ stats.load_balancers }}</span></div>
-        <div class="label">Balancers in sync</div>
+        <div class="value">{{ overview?.fleet ? overview.fleet.blocked_pct + '%' : '—' }}</div>
+        <div class="label">Blocked, last 24 h</div>
       </div>
     </div>
 
-    <!-- Zone virtual IPs -->
-    <template v-if="vipZones.length">
-      <div class="toolbar"><h2 style="font-size:16px">Virtual IPs</h2><router-link class="muted" to="/load-balancers">Load balancers →</router-link></div>
+    <!-- Zones -->
+    <template v-if="zones.length">
+      <div class="toolbar"><h2 style="font-size:16px">Zones</h2><router-link class="muted" to="/zones">Zones →</router-link></div>
       <div class="stats-grid">
-        <div v-for="z in vipZones" :key="z.id" class="vip-tile">
+        <div v-for="z in zones" :key="z.id" class="tile">
           <div class="flex gap-between">
             <ZoneBadge :id="z.id" :label="z.name" />
-            <span class="badge" :class="vipTile(z).status"><span class="dot"></span>{{ vipTile(z).status }}</span>
+            <span v-if="zoneCard(z).mode" class="badge" :class="'mode-' + zoneCard(z).mode">{{ zoneCard(z).mode }}</span>
           </div>
-          <div class="vip" style="margin-top:8px">{{ z.vip }}</div>
-          <div class="row">
-            <span class="muted">Owner</span>
-            <strong v-if="vipTile(z).owner">{{ vipTile(z).owner }}</strong>
-            <span v-else-if="!vipTile(z).balancers" style="color:var(--amber)">no balancer in zone</span>
-            <span v-else class="muted">unknown</span>
+          <div v-if="z.vip" class="vip" style="margin-top:8px">{{ z.vip }}</div>
+          <div v-if="z.vip" class="row">
+            <span class="muted">VIP owner</span>
+            <strong v-if="zoneCard(z).owner">{{ zoneCard(z).owner }}</strong>
+            <span v-else-if="!zoneCard(z).balancers" style="color:var(--amber)">no balancer</span>
+            <span v-else style="color:var(--red)">none</span>
           </div>
           <div class="row">
             <span class="muted">Queries/s</span>
-            <strong>{{ vipTile(z).qps == null ? '—' : vipTile(z).qps.toFixed(1) }}</strong>
+            <strong>{{ zoneCard(z).traffic?.qps == null ? '—' : fixed(zoneCard(z).traffic.qps) }}</strong>
           </div>
           <div class="row">
+            <span class="muted">Blocked, 24 h</span>
+            <strong>{{ zoneCard(z).traffic ? zoneCard(z).traffic.blocked_pct + '%' : '—' }}</strong>
+          </div>
+          <div class="row">
+            <span class="muted">Servers online</span>
+            <strong :style="zoneCard(z).servers && zoneCard(z).serversOnline < zoneCard(z).servers ? 'color:var(--amber)' : ''">{{ zoneCard(z).serversOnline }} / {{ zoneCard(z).servers }}</strong>
+          </div>
+          <div v-if="zoneCard(z).balancers" class="row">
             <span class="muted">Backends up</span>
-            <strong :style="vipTile(z).total && vipTile(z).up < vipTile(z).total ? 'color:var(--amber)' : ''">{{ vipTile(z).up }} / {{ vipTile(z).total }}</strong>
+            <strong :style="zoneCard(z).backendsTotal && zoneCard(z).backendsUp < zoneCard(z).backendsTotal ? 'color:var(--amber)' : ''">{{ zoneCard(z).backendsUp }} / {{ zoneCard(z).backendsTotal }}</strong>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <router-link class="muted" :to="{ path: '/traffic', query: { zone: z.id } }">Traffic →</router-link>
+            <router-link v-if="z.vip" class="muted" to="/load-balancers">Balancers →</router-link>
           </div>
         </div>
       </div>
     </template>
 
-    <!-- Traffic metrics -->
-    <div class="toolbar">
-      <h2 style="font-size:16px">Traffic metrics</h2>
-      <div class="filters">
-        <select v-model="filterZone">
-          <option value="">All zones</option>
-          <option v-for="z in zones" :key="z.id" :value="String(z.id)">{{ z.name }}</option>
-        </select>
-        <select v-model="filterServer">
-          <option value="">All servers</option>
-          <option v-for="s in serverOptions" :key="s.id" :value="String(s.id)">{{ s.name }}</option>
-        </select>
-        <span class="muted" v-if="metrics">{{ metrics.reporting }}/{{ metrics.selected }} reporting</span>
-      </div>
-    </div>
-
-    <div v-if="metrics">
-      <div class="stats-grid">
-        <div class="stat"><div class="value">{{ num(metrics.totals.num_dns_queries) }}</div><div class="label">DNS queries</div></div>
-        <div class="stat"><div class="value red">{{ num(metrics.totals.num_blocked) }}</div><div class="label">Blocked</div></div>
-        <div class="stat"><div class="value">{{ metrics.totals.blocked_pct }}%</div><div class="label">Blocked rate</div></div>
-        <div class="stat"><div class="value">{{ metrics.totals.avg_processing_ms }}<span class="muted" style="font-size:16px"> ms</span></div><div class="label">Avg processing</div></div>
-      </div>
-
-      <!-- Per-server breakdown -->
-      <div class="card" style="margin-bottom:24px">
-        <div class="card-header">
-          <h2>Per-server breakdown</h2>
-          <span v-if="metricsLoading" class="muted">refreshing…</span>
-        </div>
-        <table>
-          <thead><tr><th>Server</th><th>Queries</th><th>Blocked</th><th>Blocked %</th><th>Avg ms</th></tr></thead>
-          <tbody>
-            <tr v-for="s in metrics.servers" :key="s.server_id">
-              <td><strong>{{ s.name }}</strong></td>
-              <template v-if="s.online">
-                <td>{{ num(s.num_dns_queries) }}</td>
-                <td class="muted">{{ num(s.num_blocked) }}</td>
-                <td>{{ s.blocked_pct }}%</td>
-                <td class="muted">{{ s.avg_processing_ms }}</td>
-              </template>
-              <template v-else>
-                <td colspan="4" class="muted">offline — {{ s.error }}</td>
-              </template>
-            </tr>
-            <tr v-if="!metrics.servers.length"><td colspan="5" class="empty">No servers match this filter.</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Top lists -->
-      <div class="stats-grid" style="align-items:start">
-        <div class="card">
-          <div class="card-header"><h2>Top queried</h2></div>
-          <table>
-            <tbody>
-              <tr v-for="d in metrics.top_queried" :key="d.name">
-                <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ d.name }}</td>
-                <td style="text-align:right">{{ num(d.count) }}</td>
-              </tr>
-              <tr v-if="!metrics.top_queried.length"><td class="empty">No data</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="card">
-          <div class="card-header"><h2>Top blocked</h2></div>
-          <table>
-            <tbody>
-              <tr v-for="d in metrics.top_blocked" :key="d.name">
-                <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ d.name }}</td>
-                <td style="text-align:right">{{ num(d.count) }}</td>
-              </tr>
-              <tr v-if="!metrics.top_blocked.length"><td class="empty">No data</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="card">
-          <div class="card-header"><h2>Top clients</h2></div>
-          <table>
-            <tbody>
-              <tr v-for="d in metrics.top_clients" :key="d.name">
-                <td class="mono">{{ d.name }}</td>
-                <td style="text-align:right">{{ num(d.count) }}</td>
-              </tr>
-              <tr v-if="!metrics.top_clients.length"><td class="empty">No data</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Server sync status -->
-    <div class="card" style="margin-top:24px">
+    <!-- Traffic -->
+    <div class="card" style="margin-top:8px">
       <div class="card-header">
-        <h2>Server status</h2>
-        <span class="muted">Last sync: {{ fmt(stats.last_sync) }}</span>
+        <h2>Traffic</h2>
+        <div class="filters">
+          <select v-model="chartZone">
+            <option value="">All zones</option>
+            <option v-for="z in zones" :key="z.id" :value="String(z.id)">{{ z.name }}</option>
+          </select>
+          <select v-model="range">
+            <option v-for="[v, l] in RANGES" :key="v" :value="v">{{ l }}</option>
+          </select>
+          <router-link class="muted" to="/traffic">Details →</router-link>
+        </div>
       </div>
-      <table>
-        <thead>
-          <tr><th>Server</th><th>Zone</th><th>Status</th><th>Sync</th><th>Version</th><th>Last seen</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in servers" :key="s.id">
-            <td><strong>{{ s.name }}</strong><div class="muted mono">{{ s.url }}</div></td>
-            <td><ZoneBadge :id="s.zone_id" :label="zoneName(s.zone_id)" /></td>
-            <td><span class="badge" :class="s.status"><span class="dot"></span>{{ s.status }}</span></td>
-            <td>
-              <span v-if="s.in_sync" class="badge synced">In sync</span>
-              <span v-else class="badge drift">Drift</span>
-            </td>
-            <td class="muted">{{ s.version || '—' }}</td>
-            <td class="muted">{{ fmt(s.last_seen) }}</td>
-          </tr>
-          <tr v-if="!servers.length"><td colspan="6" class="empty">No servers yet. Add one under Servers.</td></tr>
-        </tbody>
-      </table>
+      <div style="padding:8px 16px 14px">
+        <SeriesChart :points="series?.points || []" :series="SERIES" :range-seconds="RANGE_SECONDS[range]" :height="240" />
+        <div class="hint" style="margin-top:8px">
+          Fleet-wide, summed over {{ series?.entities ?? 0 }} server{{ series?.entities === 1 ? '' : 's' }}, one point per {{ series ? (series.step_s >= 3600 ? series.step_s / 3600 + ' h' : series.step_s / 60 + ' min') : '…' }}.
+          <span v-if="overview?.as_of">Latest sample {{ ago(overview.as_of) }}.</span>
+        </div>
+      </div>
     </div>
   </div>
+  <div v-else-if="!loading" class="content"><div class="empty">Could not load the dashboard.</div></div>
 </template>

@@ -68,6 +68,19 @@ logged) instead of piling up.
 Database connections are never held while talking to an AdGuard instance, so a
 fleet of slow or unreachable servers cannot starve the API of connections.
 
+## Metrics store and Prometheus
+
+The collector that rides on each reconcile cycle keeps samples for the
+Dashboard, the Traffic page and `GET /metrics`. See
+[observability](observability.md).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `METRICS_ENABLED` | `true` | Store one sample per server, host and balancer each cycle. |
+| `METRICS_RETENTION_DAYS` | `7` | How long raw per-cycle samples are kept. |
+| `METRICS_ROLLUP_RETENTION_DAYS` | `90` | How long hourly rollups are kept. |
+| `METRICS_TOKEN` | _(empty)_ | Bearer token Prometheus presents to `GET /metrics`. Empty disables the endpoint (404). Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. |
+
 ## Automatic updates
 
 Keeps the **AdGuard Home installations** current — see the [Updates guide](updates.md).

@@ -104,6 +104,18 @@ class Settings(BaseSettings):
     # time keeps the rest of the fleet resolving while one restarts.
     auto_update_max_concurrency: int = 1
 
+    # --- Metrics store (see app.telemetry) --------------------------------- #
+    # Every reconcile cycle stores one sample per server, host and balancer, so
+    # the Dashboard and the Traffic page read the database instead of asking
+    # every server on each page load, and can show history.
+    metrics_enabled: bool = True
+    # Raw per-cycle samples are kept this long; hourly rollups this long.
+    metrics_retention_days: int = 7
+    metrics_rollup_retention_days: int = 90
+    # Bearer token Prometheus presents to GET /metrics. Empty disables the
+    # endpoint (404).
+    metrics_token: str = ""
+
     # Login brute-force protection (in-process; see app.ratelimit).
     login_max_attempts: int = 10
     login_window_seconds: int = 300

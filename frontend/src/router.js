@@ -3,6 +3,7 @@ import { useAuth } from './stores/auth'
 
 import Login from './views/Login.vue'
 import Dashboard from './views/Dashboard.vue'
+import Traffic from './views/Traffic.vue'
 import Zones from './views/Zones.vue'
 import Hosts from './views/Hosts.vue'
 import Servers from './views/Servers.vue'
@@ -18,6 +19,7 @@ import Users from './views/Users.vue'
 const routes = [
   { path: '/login', name: 'login', component: Login, meta: { public: true } },
   { path: '/', name: 'dashboard', component: Dashboard },
+  { path: '/traffic', name: 'traffic', component: Traffic },
   { path: '/zones', name: 'zones', component: Zones },
   { path: '/hosts', name: 'hosts', component: Hosts },
   { path: '/servers', name: 'servers', component: Servers },

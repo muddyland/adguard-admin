@@ -21,7 +21,8 @@ out to every server — and keep them that way.
 | [Hosts](hosts.md) | The host agent, its mutual-TLS security model, and the Hosts page |
 | [Load balancing](load-balancing.md) | dnsdist balancers per zone, virtual IPs, and the balancer stats |
 | [Updates](updates.md) | Keeping the AdGuard Home containers and binaries themselves current |
-| [Dashboard & query log](dashboard-and-query-log.md) | Fleet-wide metrics and a combined, searchable query log |
+| [Dashboard, traffic & query log](dashboard-and-query-log.md) | The health view, traffic history and a combined, searchable query log |
+| [Observability](observability.md) | The sample store, retention, and scraping the fleet with Prometheus |
 | [Users & SSO](users-and-sso.md) | Roles (admin/editor/viewer) and OIDC single sign-on |
 | [Home Assistant](home-assistant.md) | Driving the fleet from Home Assistant's built-in AdGuard integration |
 | [Configuration reference](configuration.md) | Every environment variable |

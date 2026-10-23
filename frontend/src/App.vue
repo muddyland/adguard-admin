@@ -15,6 +15,7 @@ watch(() => route.fullPath, () => { navOpen.value = false })
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: '▤' },
+  { to: '/traffic', label: 'Traffic', icon: '∿' },
   { to: '/zones', label: 'Zones', icon: '◈' },
   { to: '/hosts', label: 'Hosts', icon: '▣' },
   { to: '/servers', label: 'Servers', icon: '⛁' },

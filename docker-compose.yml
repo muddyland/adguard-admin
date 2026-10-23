@@ -23,6 +23,12 @@ services:
       # Public URL of this admin app, reachable by provisioned servers.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       PROVISION_TOKEN_TTL_HOURS: ${PROVISION_TOKEN_TTL_HOURS:-24}
+      # Metrics store (Dashboard, Traffic page) and the Prometheus scrape
+      # endpoint; an empty token keeps /metrics switched off.
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-7}
+      METRICS_ROLLUP_RETENTION_DAYS: ${METRICS_ROLLUP_RETENTION_DAYS:-90}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       # AdGuard-compatible /control API for Home Assistant's built-in
       # integration. HTTP Basic against local accounts; set to false to remove it.
       HA_COMPAT_ENABLED: ${HA_COMPAT_ENABLED:-true}

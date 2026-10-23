@@ -1,25 +1,47 @@
-# Dashboard & query log
+# Dashboard, traffic & query log
 
-Two views give you fleet-wide visibility without logging into each server.
+Three views give you fleet-wide visibility without logging into each server.
+The Dashboard and Traffic pages read the control plane's own
+[sample store](observability.md), so they load instantly and show history;
+the query log is fetched live.
 
 ## Dashboard
 
-The **Dashboard** combines counters and traffic metrics across the whole fleet.
+The **Dashboard** is the health view.
 
 ![Dashboard](images/dashboard.png)
 
-At the top, fleet counters: **zones**, **servers online**, **servers in sync**, and
-total / global **DNS records**.
+- **Needs attention** comes first: everything currently wrong, worst first,
+  each line linking to the page that fixes it. When nothing is wrong it reads
+  **All clear**.
+- **Fleet tiles**: servers online, servers in sync, hosts online, balancers in
+  sync, queries per second right now and the blocked rate over the last day.
+- **One card per zone**: its VIP and who holds it, queries per second,
+  blocked rate, servers online and (with a balancer) backends up, with links
+  to that zone's traffic and balancers.
+- **Traffic**: queries and blocked per second across the fleet, for the last
+  hour up to 30 days, filterable by zone. Hover for the values at any point,
+  or switch to the table view.
 
-Below, **traffic metrics** aggregated from every reporting server:
+**Sync now** triggers an immediate [reconciliation](concepts.md#reconciliation)
+pass, which also takes a fresh sample. The page refreshes itself every minute.
 
-- **DNS queries** and **blocked** counts, plus the **blocked rate**.
-- **Average processing time**.
-- A **per-server breakdown** so you can spot an outlier.
-- **Top queried**, **top blocked**, and **top clients** lists.
+## Traffic
 
-Use the **zone** and **server** filters to focus on part of the fleet, and **Sync now**
-to trigger an immediate [reconciliation](concepts.md#reconciliation) pass.
+The **Traffic** page is the detail behind the Dashboard's curve:
+
+![Traffic](images/traffic.png)
+
+- the same **queries over time** chart, with zone, server and range filters;
+- **statistics window** totals: DNS queries, blocked, blocked rate and
+  average processing time, as AdGuard itself counts them (24 hours by
+  default, configurable on the server);
+- a **per-server breakdown** with each server's share, so you can spot an
+  outlier or an idle box;
+- **top queried**, **top blocked** and **top clients** merged across the
+  selected servers.
+
+All of it comes from the last collection cycle; "as of" shows how fresh it is.
 
 ## Query log
 

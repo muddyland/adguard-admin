@@ -1,13 +1,22 @@
-"""T1/T9/T10: the dashboard and query log must survive one misbehaving server."""
+"""T1/T9/T10: the dashboard and query log must survive one misbehaving server.
+
+The dashboard's numbers now come from the collector that rides on the
+reconcile loop (app.telemetry), so the metrics cases drive that collector and
+then read the API it feeds.
+"""
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
+from app import fleet as fleet_mod
+from app import telemetry
+from app.fleet import as_number as _as_number
 from app.models import Server
-from app.routers import metrics as metrics_mod
 from app.routers import querylog as querylog_mod
-from app.routers.metrics import _as_number, _merge_top
 from app.routers.querylog import _parse_time
+from app.telemetry import merge_top as _merge_top
 
 
 def _add_server(session, name, url):
@@ -55,7 +64,8 @@ def test_metrics_survives_a_server_whose_client_cannot_be_built(
             raise ValueError("malformed pinned certificate")
         return StatsClient({"num_dns_queries": 10, "num_blocked_filtering": 4})
 
-    monkeypatch.setattr(metrics_mod, "AdGuardClient", factory)
+    monkeypatch.setattr(fleet_mod, "AdGuardClient", factory)
+    asyncio.run(telemetry.collect_all())
 
     resp = client.get("/api/metrics", headers=admin_headers)
     assert resp.status_code == 200, resp.text
@@ -72,7 +82,7 @@ def test_metrics_tolerates_unexpected_payload_shapes(
 ):
     _add_server(session, "weird", "http://10.0.0.4:3000")
     monkeypatch.setattr(
-        metrics_mod, "AdGuardClient",
+        fleet_mod, "AdGuardClient",
         lambda *a, **k: StatsClient({
             "num_dns_queries": "120",              # string instead of int
             "num_blocked_filtering": None,
@@ -81,6 +91,7 @@ def test_metrics_tolerates_unexpected_payload_shapes(
             "top_clients": None,
         }),
     )
+    asyncio.run(telemetry.collect_all())
     resp = client.get("/api/metrics", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["totals"]["num_dns_queries"] == 120
