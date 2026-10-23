@@ -32,10 +32,11 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from .adguard_client import AdGuardClient, AdGuardError
+from .agent_client import AgentClient, AgentError
 from .certs import verify_for
 from .config import parse_window, settings
 from .database import engine
-from .models import InstallMethod, Server, UpdateState
+from .models import Agent, InstallMethod, Server, UpdateState
 from .security import decrypt_secret
 from .sync import lock_for
 
@@ -95,7 +96,7 @@ def skip_reason(server: Server, now: datetime) -> str | None:
         return "automatic updates are off for this server"
     if not server.update_available or not (server.latest_version or "").strip():
         if server.update_check_disabled:
-            if server.install_method == InstallMethod.docker:
+            if server.install_method == InstallMethod.docker and server.agent_id is None:
                 return "kept current by the on-box updater; the container cannot report releases"
             return (
                 "this server's own update check is switched off, so it never reports a new "
@@ -139,9 +140,14 @@ def due_server_ids(*, force: bool = False, only_server_id: int | None = None) ->
         due: list[int] = []
         for server in session.exec(stmt).all():
             if force:
-                # Still refuse the pointless cases: nothing to install, or a box
-                # we already know updates itself.
-                if not server.update_available or not (server.latest_version or "").strip():
+                # Still refuse the pointless case of nothing to install — except
+                # for an agent-managed container, where "update" means pulling
+                # the image tag again, which can move without AdGuard's own
+                # version check noticing.
+                agent_docker = server.agent_id is not None and server.install_method == InstallMethod.docker
+                if not agent_docker and (
+                    not server.update_available or not (server.latest_version or "").strip()
+                ):
                     continue
             else:
                 reason = skip_reason(server, now)
@@ -201,6 +207,22 @@ async def _await_new_version(
     return None
 
 
+async def _await_back(client: AdGuardClient, deadline: float) -> str | None:
+    """Poll until the instance answers /control/status again; return its version."""
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(3)
+    while loop.time() < deadline:
+        try:
+            status = await client.status()
+            version = (status.get("version") or "").strip()
+            if version:
+                return version
+        except AdGuardError:
+            pass
+        await asyncio.sleep(3)
+    return None
+
+
 async def update_server(server_id: int) -> UpdateOutcome | None:
     """Upgrade one server. Never raises; returns None if it vanished.
 
@@ -229,6 +251,10 @@ async def update_server(server_id: int) -> UpdateOutcome | None:
             tls_cert = server.tls_cert
             install_method = server.install_method
             current_version = server.version
+            agent_url = None
+            if server.agent_id is not None:
+                agent_row = session.get(Agent, server.agent_id)
+                agent_url = agent_row.url if agent_row else None
 
         try:
             client = AdGuardClient(
@@ -255,6 +281,44 @@ async def update_server(server_id: int) -> UpdateOutcome | None:
             check_disabled = bool(info.get("disabled"))
             status = await client.status()
             current_version = (status.get("version") or "").strip() or current_version
+
+            if agent_url and install_method == InstallMethod.docker:
+                # A container cannot replace its own image, but the agent on the
+                # host can: pull, recreate with the same volumes. We then wait for
+                # the instance to answer again; the version may or may not change
+                # (a moved `latest` tag can rebuild the same release).
+                logger.info("upgrading %s via its agent: %s -> %s", name, current_version or "?", target or "current tag")
+                async with AgentClient(agent_url) as agent:
+                    reply = await agent.adguard_update()
+                if not reply.get("started"):
+                    outcome = UpdateOutcome(
+                        server_id=server_id, server_name=name, state=UpdateState.idle,
+                        from_version=current_version, to_version=target,
+                        message=reply.get("message") or "Already on the latest image.",
+                    )
+                    _record(server_id, outcome, target=None)
+                    return outcome
+                deadline = asyncio.get_running_loop().time() + settings.auto_update_restart_timeout_seconds
+                new_version = await _await_back(client, deadline)
+                if new_version is None:
+                    outcome = UpdateOutcome(
+                        server_id=server_id, server_name=name, state=UpdateState.failed,
+                        from_version=current_version, to_version=target,
+                        message=(
+                            f"The agent recreated the container but the server did not answer again "
+                            f"within {settings.auto_update_restart_timeout_seconds:g}s."
+                        ),
+                    )
+                    _record(server_id, outcome, target=target)
+                    return outcome
+                outcome = UpdateOutcome(
+                    server_id=server_id, server_name=name, state=UpdateState.succeeded,
+                    from_version=current_version, to_version=new_version,
+                    message=f"Recreated from the current image: {current_version or '?'} -> {new_version} (via agent).",
+                )
+                _record(server_id, outcome, target=target or new_version)
+                logger.info("%s updated to %s via agent", name, new_version)
+                return outcome
 
             if not target or target == (current_version or ""):
                 # "No new version" and "I was never asked to look" are different
@@ -328,7 +392,7 @@ async def update_server(server_id: int) -> UpdateOutcome | None:
             logger.info("%s updated to %s", name, new_version)
             return outcome
 
-        except AdGuardError as exc:
+        except (AdGuardError, AgentError) as exc:
             outcome = UpdateOutcome(
                 server_id=server_id, server_name=name, state=UpdateState.failed,
                 from_version=current_version, to_version=target, message=str(exc),

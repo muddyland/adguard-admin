@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, status
 from sqlmodel import func, select
 
 from ..deps import CurrentUser, RequireEditor, SessionDep
-from ..models import DNSRecord, ForwardZone, Server, Upstream, Zone
+from ..hosts import ensure_zone_vrrp
+from ..models import DNSRecord, ForwardZone, LoadBalancer, Server, Upstream, Zone
 from ..schemas import ZoneCreate, ZoneRead, ZoneUpdate
 
 router = APIRouter(prefix="/api/zones", tags=["zones"])
@@ -25,9 +26,14 @@ def _to_read(session, zone: Zone) -> ZoneRead:
         select(func.count()).select_from(Server).where(Server.zone_id == zone.id)
     ).one()
     record_count = _zone_member_count(session, DNSRecord, zone.id)
+    lb_count = session.exec(
+        select(func.count()).select_from(LoadBalancer).where(LoadBalancer.zone_id == zone.id)
+    ).one()
     return ZoneRead(
         id=zone.id, name=zone.name, slug=zone.slug, description=zone.description,
+        vip=zone.vip, vrrp_router_id=zone.vrrp_router_id,
         created_at=zone.created_at, server_count=server_count, record_count=record_count,
+        load_balancer_count=lb_count,
     )
 
 
@@ -41,10 +47,15 @@ def create_zone(payload: ZoneCreate, _: RequireEditor, session: SessionDep):
     slug = slugify(payload.slug or payload.name)
     if session.exec(select(Zone).where((Zone.name == payload.name) | (Zone.slug == slug))).first():
         raise HTTPException(status_code=409, detail="Zone name or slug already exists")
-    zone = Zone(name=payload.name, slug=slug, description=payload.description)
+    zone = Zone(
+        name=payload.name, slug=slug, description=payload.description,
+        vip=payload.vip, vrrp_router_id=payload.vrrp_router_id,
+    )
     session.add(zone)
     session.commit()
     session.refresh(zone)
+    if zone.vip:
+        ensure_zone_vrrp(session, zone)
     return _to_read(session, zone)
 
 
@@ -61,6 +72,10 @@ def update_zone(zone_id: int, payload: ZoneUpdate, _: RequireEditor, session: Se
     session.add(zone)
     session.commit()
     session.refresh(zone)
+    if zone.vip:
+        # A VIP needs a router id and a VRRP password; generate them once so
+        # every balancer in the zone renders the same instance.
+        ensure_zone_vrrp(session, zone)
     return _to_read(session, zone)
 
 
@@ -71,6 +86,8 @@ def delete_zone(zone_id: int, _: RequireEditor, session: SessionDep):
         raise HTTPException(status_code=404, detail="Zone not found")
     if session.exec(select(Server).where(Server.zone_id == zone_id)).first():
         raise HTTPException(status_code=400, detail="Zone has servers; reassign or remove them first")
+    if session.exec(select(LoadBalancer).where(LoadBalancer.zone_id == zone_id)).first():
+        raise HTTPException(status_code=400, detail="Zone has load balancers; reassign or remove them first")
     # Require cleanup of any zone-scoped records / DNS settings referencing this zone.
     if _zone_member_count(session, DNSRecord, zone_id):
         raise HTTPException(status_code=400, detail="Zone has DNS records; remove them first")

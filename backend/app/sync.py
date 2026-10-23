@@ -555,6 +555,10 @@ def _due_servers(force: bool, only_server_id: int | None) -> list[int]:
             stmt = stmt.where(Server.id == only_server_id)
         due: list[int] = []
         for server in session.exec(stmt).all():
+            # An agent-managed host whose AdGuard role is still installing has
+            # nothing to talk to yet; the host pass records that on the row.
+            if server.agent_id is not None and (server.agent_state or {}).get("state") != "ready":
+                continue
             # Honor an auth/rate-limit cooldown (unless this is a forced/manual run).
             if not force and server.cooldown_until:
                 cu = server.cooldown_until
@@ -637,14 +641,31 @@ async def reconcile_all(
         except Exception:
             logger.exception("hostname record reconcile failed")
 
+    # Hosts first: push each agent its AdGuard spec and learn whether the role is
+    # ready, so a box that just finished installing is synced in this same cycle.
+    from . import hosts
+
+    limit = max(1, settings.sync_max_concurrency)
+    if not dry_run:
+        try:
+            if only_server_id is None:
+                await hosts.reconcile_hosts(limit=limit)
+            else:
+                agent_id = await asyncio.to_thread(_agent_of_server, only_server_id)
+                if agent_id is not None:
+                    await hosts.reconcile_agent(agent_id)
+        except Exception:
+            logger.exception("host reconcile failed")
+
     server_ids = await asyncio.to_thread(_due_servers, force, only_server_id)
     if not server_ids:
+        if not dry_run and only_server_id is None:
+            await _reconcile_balancers_safely(limit)
         return []
 
     # Bounded fan-out. Strictly sequential reconciliation could not finish a
     # cycle within sync_interval_seconds once a handful of servers were slow or
     # unreachable (each burns the full per-request timeout).
-    limit = max(1, settings.sync_max_concurrency)
     semaphore = asyncio.Semaphore(limit)
 
     async def _guarded(server_id: int) -> ServerSyncResult | None:
@@ -667,7 +688,27 @@ async def reconcile_all(
             ))
         elif item is not None:
             results.append(item)
+
+    # Balancers last, so a server that first became ready above is already a
+    # backend when its zone's dnsdist config is rendered.
+    if not dry_run and only_server_id is None:
+        await _reconcile_balancers_safely(limit)
     return results
+
+
+def _agent_of_server(server_id: int) -> int | None:
+    with Session(engine) as session:
+        server = session.get(Server, server_id)
+        return server.agent_id if server else None
+
+
+async def _reconcile_balancers_safely(limit: int) -> None:
+    from . import hosts
+
+    try:
+        await hosts.reconcile_balancers(limit=limit)
+    except Exception:
+        logger.exception("load balancer reconcile failed")
 
 
 class SyncManager:

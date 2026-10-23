@@ -26,8 +26,13 @@ server comes back online.
   upstreams) on each server and applies the difference. Offline servers are retried
   until they converge.
 - **Import** — pull a server's existing rewrites *and* upstream config into the admin DB.
-- **Provisioning** — one-line, token-based install of new servers (Docker or bare-metal)
-  with optional server-side TLS cert.
+- **Hosts & agents** — one-line, token-based provisioning installs a small **host agent**
+  (mutual TLS, certificate issued against a key generated on the box). The control
+  plane then installs and configures AdGuard Home and/or dnsdist on the host and keeps
+  them converged; AdGuard's API never has to be exposed on the LAN.
+- **Load balancing** — a **dnsdist** balancer per zone in front of the zone's AdGuard
+  servers, with health checks, per-backend stats and drains, and an optional **virtual
+  IP** per zone floated with keepalived so the balancer itself is redundant.
 - **Automatic updates** — keep the AdGuard Home **installations** current, not just
   their config: bare-metal boxes are upgraded over AdGuard's own control API on a
   schedule (with an optional maintenance window), and Docker hosts get a one-line
@@ -50,7 +55,7 @@ server comes back online.
 | [![Dashboard](docs/images/dashboard.png)](docs/images/dashboard.png) | [![Query log](docs/images/query-log.png)](docs/images/query-log.png) |
 | **DNS records** — global & zone-scoped rewrites | **DNS settings** — upstreams & forward zones |
 | [![DNS records](docs/images/records.png)](docs/images/records.png) | [![DNS settings](docs/images/dns-settings.png)](docs/images/dns-settings.png) |
-| **Servers** — status, version, sync state | **Provisioning** — one-line server installs |
+| **Servers** — status, version, sync state | **Provisioning** — one-line host installs |
 | [![Servers](docs/images/servers.png)](docs/images/servers.png) | [![Provisioning](docs/images/provision.png)](docs/images/provision.png) |
 
 ## Documentation
@@ -65,7 +70,9 @@ Full guides live in [`docs/`](docs/README.md):
 | [Servers](docs/servers.md) | Adding, testing, importing, per-server behavior |
 | [DNS settings](docs/dns-settings.md) | Upstream resolvers and forward zones |
 | [Filtering](docs/filtering.md) | Blocklists, allowlists and blocked services |
-| [Provisioning](docs/provisioning.md) | One-line install of new AdGuard servers |
+| [Provisioning](docs/provisioning.md) | One-line install of a managed host (AdGuard Home and/or dnsdist) |
+| [Hosts](docs/hosts.md) | The agent: what it runs, its security model, the Hosts page |
+| [Load balancing](docs/load-balancing.md) | dnsdist balancers, zone virtual IPs, what the stats mean |
 | [Updates](docs/updates.md) | Keeping the AdGuard Home containers/binaries themselves up to date |
 | [Dashboard & query log](docs/dashboard-and-query-log.md) | Fleet metrics and the combined query log |
 | [Users & SSO](docs/users-and-sso.md) | Roles and OIDC single sign-on |
@@ -183,6 +190,8 @@ variable.
   algorithm-confusion attacks. Authorization re-reads the user from the database on
   every request, so disabling, deleting or demoting an account takes effect at once.
 - Local logins are rate-limited per IP and per username.
+- Hosts are managed over mutual TLS with a per-deployment CA; agent keys are generated
+  on the box and never transmitted.
 - Provisioning input that reaches the root-run `install.sh` is validated and
   shell-quoted; the endpoints serving the admin password and TLS private key are
   single-fetch.

@@ -111,3 +111,118 @@ def validate_port(value: int, *, field: str = "port") -> int:
     if not (1 <= value <= 65535):
         raise ValidationError(f"{field} must be between 1 and 65535")
     return value
+
+
+# --------------------------------------------------------------------------- #
+# Load-balancer and VRRP values. These are rendered by the agent into dnsdist's
+# Lua config and keepalived's config, so they are validated here as well as on
+# the box.
+# --------------------------------------------------------------------------- #
+_IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+_IMAGE_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_.-]{1,128})?(?:@sha256:[a-f0-9]{64})?$")
+_BACKEND_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def validate_cidr(value: str, *, field: str = "cidr") -> str:
+    """An IPv4/IPv6 network in CIDR form (a bare address gets a host prefix)."""
+    if value is None:
+        raise ValidationError(f"{field} is required")
+    value = value.strip()
+    try:
+        net = ipaddress.ip_network(value, strict=False)
+    except ValueError as exc:
+        raise ValidationError(f"{field} must be an IP network in CIDR form (got {value!r})") from exc
+    return str(net)
+
+
+def validate_vip(value: str | None, *, field: str = "vip") -> str | None:
+    """A virtual IP with its prefix, e.g. 10.0.0.53/24. Empty clears it."""
+    if value is None or not value.strip():
+        return None
+    value = value.strip()
+    if "/" not in value:
+        raise ValidationError(f"{field} must include a prefix length, e.g. 10.0.0.53/24")
+    try:
+        iface = ipaddress.ip_interface(value)
+    except ValueError as exc:
+        raise ValidationError(f"{field} must be an IP address with prefix (got {value!r})") from exc
+    if iface.ip.is_unspecified or iface.ip.is_loopback or iface.ip.is_multicast:
+        raise ValidationError(f"{field} must be a unicast address")
+    return str(iface)
+
+
+def validate_router_id(value: int | None, *, field: str = "vrrp_router_id") -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or not (1 <= value <= 255):
+        raise ValidationError(f"{field} must be between 1 and 255")
+    return value
+
+
+def validate_priority(value: int, *, field: str = "vrrp_priority") -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not (1 <= value <= 254):
+        raise ValidationError(f"{field} must be between 1 and 254")
+    return value
+
+
+def validate_interface(value: str, *, field: str = "interface") -> str:
+    value = (value or "").strip()
+    if value and not _IFACE_RE.match(value):
+        raise ValidationError(f"{field} must be an interface name like eth0")
+    return value
+
+
+def validate_listen_address(value: str, *, field: str = "listen address") -> str:
+    """host:port for a dnsdist listener; IPv6 literals bracketed."""
+    value = (value or "").strip()
+    if _CONTROL_CHARS_RE.search(value) or not value:
+        raise ValidationError(f"{field} is required")
+    host, port = value, 53
+    if value.startswith("["):
+        end = value.find("]")
+        if end < 0:
+            raise ValidationError(f"{field} has an unterminated IPv6 literal")
+        host = value[1:end]
+        rest = value[end + 1:]
+        if rest:
+            if not rest.startswith(":"):
+                raise ValidationError(f"{field} must look like [addr]:port")
+            port = _int_port(rest[1:], field)
+    elif value.count(":") == 1:
+        host, port_s = value.split(":", 1)
+        port = _int_port(port_s, field)
+    elif value.count(":") > 1:
+        host = value  # bare IPv6, default port
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValidationError(f"{field} must be an IP address (got {host!r})") from exc
+    return f"{format_host_port(str(ip), port)}"
+
+
+def _int_port(text: str, field: str) -> int:
+    try:
+        port = int(text)
+    except ValueError as exc:
+        raise ValidationError(f"{field} has a non-numeric port") from exc
+    return validate_port(port, field=f"{field} port")
+
+
+def validate_image_ref(value: str, *, field: str = "image") -> str:
+    value = (value or "").strip()
+    if not _IMAGE_RE.match(value) or len(value) > 255:
+        raise ValidationError(f"{field} must be a container image reference like repo/name:tag")
+    return value
+
+
+def validate_backend_name(value: str, *, field: str = "backend name") -> str:
+    value = (value or "").strip()
+    if not _BACKEND_NAME_RE.match(value):
+        raise ValidationError(f"{field} must match [A-Za-z0-9_.-]{{1,64}}")
+    return value
+
+
+def backend_name_for(server_name: str, server_id: int) -> str:
+    """A dnsdist backend name derived from a server: safe charset, unique by id."""
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", (server_name or "").strip()).strip("-.") or "server"
+    return f"{base[:50]}-{server_id}"

@@ -9,6 +9,8 @@ const stats = ref(null)
 const servers = ref([])
 const zones = ref([])
 const metrics = ref(null)
+const agents = ref([])
+const lbs = ref([])
 const metricsLoading = ref(false)
 const syncing = ref(false)
 const msg = ref('')
@@ -30,6 +32,28 @@ async function loadBase() {
   stats.value = s.data
   servers.value = sv.data
   zones.value = z.data
+  // Hosts and balancers are optional context; an older backend simply has none.
+  const [a, l] = await Promise.allSettled([api.get('/agents'), api.get('/load-balancers')])
+  agents.value = a.status === 'fulfilled' ? a.value.data : []
+  lbs.value = l.status === 'fulfilled' ? l.value.data : []
+}
+
+// One tile per zone that has a VIP: who holds it, how busy it is, how many backends are up.
+const vipZones = computed(() => zones.value.filter((z) => z.vip))
+function vipTile(z) {
+  const zoneLbs = lbs.value.filter((l) => l.zone_id === z.id)
+  const owner = zoneLbs.find((l) => l.keepalived_state?.vip_owner) || null
+  const src = owner || zoneLbs[0] || null
+  const backends = src?.backends || []
+  const live = backends.filter((b) => b.live)
+  return {
+    owner: owner ? (agents.value.find((a) => a.id === owner.agent_id)?.name || owner.name) : null,
+    balancers: zoneLbs.length,
+    qps: live.length ? live.reduce((n, b) => n + Number(b.live.qps || 0), 0) : null,
+    up: backends.filter((b) => b.live?.state === 'up' && !b.live?.drained).length,
+    total: backends.length,
+    status: src?.status || 'unknown',
+  }
 }
 
 async function loadMetrics() {
@@ -91,7 +115,43 @@ onMounted(async () => { await loadBase(); await loadMetrics() })
       </div>
       <div class="stat"><div class="value">{{ stats.records }}</div><div class="label">DNS records</div></div>
       <div class="stat"><div class="value">{{ stats.records_global }}</div><div class="label">Global records</div></div>
+      <div class="stat" v-if="stats.agents != null">
+        <div class="value" :class="stats.agents && stats.agents_online === stats.agents ? 'green' : (stats.agents ? 'red' : '')">{{ stats.agents_online ?? 0 }}<span class="muted" style="font-size:18px">/{{ stats.agents }}</span></div>
+        <div class="label">Hosts online</div>
+      </div>
+      <div class="stat" v-if="stats.load_balancers != null">
+        <div class="value" :class="stats.load_balancers && stats.load_balancers_in_sync === stats.load_balancers ? 'green' : (stats.load_balancers ? 'red' : '')">{{ stats.load_balancers_in_sync ?? 0 }}<span class="muted" style="font-size:18px">/{{ stats.load_balancers }}</span></div>
+        <div class="label">Balancers in sync</div>
+      </div>
     </div>
+
+    <!-- Zone virtual IPs -->
+    <template v-if="vipZones.length">
+      <div class="toolbar"><h2 style="font-size:16px">Virtual IPs</h2><router-link class="muted" to="/load-balancers">Load balancers →</router-link></div>
+      <div class="stats-grid">
+        <div v-for="z in vipZones" :key="z.id" class="vip-tile">
+          <div class="flex gap-between">
+            <ZoneBadge :id="z.id" :label="z.name" />
+            <span class="badge" :class="vipTile(z).status"><span class="dot"></span>{{ vipTile(z).status }}</span>
+          </div>
+          <div class="vip" style="margin-top:8px">{{ z.vip }}</div>
+          <div class="row">
+            <span class="muted">Owner</span>
+            <strong v-if="vipTile(z).owner">{{ vipTile(z).owner }}</strong>
+            <span v-else-if="!vipTile(z).balancers" style="color:var(--amber)">no balancer in zone</span>
+            <span v-else class="muted">unknown</span>
+          </div>
+          <div class="row">
+            <span class="muted">Queries/s</span>
+            <strong>{{ vipTile(z).qps == null ? '—' : vipTile(z).qps.toFixed(1) }}</strong>
+          </div>
+          <div class="row">
+            <span class="muted">Backends up</span>
+            <strong :style="vipTile(z).total && vipTile(z).up < vipTile(z).total ? 'color:var(--amber)' : ''">{{ vipTile(z).up }} / {{ vipTile(z).total }}</strong>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <!-- Traffic metrics -->
     <div class="toolbar">

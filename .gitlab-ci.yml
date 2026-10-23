@@ -32,6 +32,7 @@ variables:
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
   # previous pin failed at image pull, not at anything in the build.
   DOCKER_IMAGE: "docker:29.8.2"
+  GO_IMAGE: "golang:1.24-alpine"
   # Set USE_DHI to "true" to build the runtime image on a Docker Hardened Image
   # (no shell, no package manager) instead of python:3.14-slim. Off by default,
   # so the public mirror builds on slim. DHI_PYTHON_IMAGE is the repository
@@ -118,6 +119,29 @@ test:startup-smoke:
       assert any('SECRET_KEY' in p for p in problems), problems
       print('insecure-config gate OK')
       "
+
+test:agent:
+  stage: test
+  image: $GO_IMAGE
+  tags: [saas-linux-small-amd64]
+  variables:
+    GOFLAGS: "-buildvcs=false"
+  script:
+    - cd agent
+    # A plain-scalar line with "gofmt: ..." in it is parsed by YAML as a
+    # mapping, which GitLab rejects; hence the block.
+    - |
+      if [ -n "$(gofmt -l .)" ]; then
+        gofmt -l .
+        echo "gofmt - the files above need formatting"
+        exit 1
+      fi
+    - go vet ./...
+    - go test ./...
+    # The image build cross-compiles for three architectures; make sure that
+    # still works before the build stage pays for it.
+    - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /dev/null ./cmd/adguard-admin-agent
+    - CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null ./cmd/adguard-admin-agent
 
 build:frontend:
   extends: .node_base
@@ -236,6 +260,7 @@ build:image:
       # the move off docker:24. Without attestations the push is the same
       # single manifest docker:24 produced.
       docker build $BUILD_ARGS --provenance=false --sbom=false \
+        --build-arg AGENT_VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}" \
         --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME .
     - IMAGE=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
     - SECRET_KEY=$(docker run --rm --entrypoint python $IMAGE -c "import secrets; print(secrets.token_urlsafe(48))")
@@ -276,6 +301,11 @@ build:image:
       done
       test "$H" = "healthy" || { echo "FAIL: container health is $H"; exit 1; }
       echo "OK: container reports healthy"
+      # The agent binaries must ship in the image and be served with checksums.
+      # Python, not sh: the hardened image has no shell.
+      docker exec ci_upgrade python -c 'import os; [os.stat(f"/app/agent-bin/adguard-admin-agent-linux-{a}").st_size > 1000000 or exit(1) for a in ("amd64","arm64","arm")]' \
+        || { echo "FAIL: agent binaries missing from the image"; exit 1; }
+      docker exec ci_upgrade python -c "import urllib.request,json; m=json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/agents/download/manifest')); assert set(m['files'])=={'linux/amd64','linux/arm64','linux/arm'}, m; print('OK: agent manifest', m['version'])"
       docker rm -f ci_upgrade; docker volume rm -f ci_legacy_data
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
   rules:

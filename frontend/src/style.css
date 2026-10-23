@@ -44,6 +44,16 @@
 :root[data-theme="dark"] .badge.role-editor { background: rgba(106, 169, 230, 0.18); }
 :root[data-theme="dark"] .badge.drift { background: rgba(232, 185, 74, 0.18); }
 :root[data-theme="dark"] .badge.role-admin { background: rgba(170, 110, 210, 0.22); color: #c89be0; }
+:root[data-theme="dark"] .badge.role-keepalived { background: rgba(170, 110, 210, 0.22); color: #c89be0; }
+:root[data-theme="dark"] .badge.role-dnsdist { background: rgba(106, 169, 230, 0.18); }
+:root[data-theme="dark"] .badge.mode-dnsdist { background: rgba(106, 169, 230, 0.18); }
+:root[data-theme="dark"] .badge.mode-ipvs { background: rgba(170, 110, 210, 0.22); color: #c89be0; }
+:root[data-theme="dark"] .badge.provisioning,
+:root[data-theme="dark"] .badge.drained { background: rgba(232, 185, 74, 0.18); }
+:root[data-theme="dark"] .badge.stopped,
+:root[data-theme="dark"] .badge.nodata { background: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .share-bar { background: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .meter { background: rgba(255, 255, 255, 0.08); }
 :root[data-theme="dark"] .alert-error { border-color: rgba(240, 117, 108, 0.4); }
 
 * { box-sizing: border-box; }
@@ -198,6 +208,19 @@ tbody tr:hover { background: #fafbfc; }
 .badge.role-admin { background: #f3e8fb; color: #8e44ad; }
 .badge.role-editor { background: #e8f0fb; color: var(--blue); }
 .badge.role-viewer { background: #f0f2f4; color: var(--text-muted); }
+.badge.provisioning { background: #fdf4e3; color: var(--amber); }
+.badge.stopped { background: #f0f2f4; color: var(--text-muted); }
+/* Host roles (agent-managed services) */
+.badge.role-adguard { background: var(--green-light); color: var(--green-dark); }
+.badge.role-dnsdist { background: #e8f0fb; color: var(--blue); }
+/* Load-balancer mode badges */
+.badge.mode-dnsdist { background: #e8f0fb; color: var(--blue); }
+.badge.mode-ipvs { background: #f3e8fb; color: #8e44ad; }
+.badge.role-keepalived { background: #f3e8fb; color: #8e44ad; }
+.badge.up { background: var(--green-light); color: var(--green-dark); }
+.badge.down { background: var(--red-light); color: var(--red); }
+.badge.drained { background: #fdf4e3; color: var(--amber); }
+.badge.nodata { background: #f0f2f4; color: var(--text-muted); }
 
 /* ---------------- Forms ---------------- */
 .form-row { margin-bottom: 16px; }
@@ -254,6 +277,30 @@ input:focus, select:focus, textarea:focus {
 @keyframes spin { to { transform: rotate(360deg); } }
 .flex { display: flex; align-items: center; gap: 8px; }
 .gap-between { justify-content: space-between; }
+
+/* ---------------- Load balancers / hosts ---------------- */
+/* Query share per backend: a plain bar, width = percentage of the balancer's total. */
+.share-bar { position: relative; height: 8px; border-radius: 4px; background: #eceff1; min-width: 90px; overflow: hidden; }
+.share-bar > span { position: absolute; inset: 0 auto 0 0; background: var(--green); border-radius: 4px; }
+.share-bar.down > span { background: var(--red); }
+.share-bar.drained > span { background: var(--amber); }
+.share-cell { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+.share-cell .pct { font-size: 12px; color: var(--text-muted); width: 38px; text-align: right; }
+/* Host health meters (memory, disk) */
+.meter { height: 6px; border-radius: 3px; background: #eceff1; overflow: hidden; width: 90px; display: inline-block; vertical-align: middle; }
+.meter > span { display: block; height: 100%; background: var(--green); }
+.meter.warn > span { background: var(--amber); }
+.meter.crit > span { background: var(--red); }
+.kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; padding: 16px 20px; }
+.kv-grid .k { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); font-weight: 600; }
+.kv-grid .v { font-size: 16px; font-weight: 600; margin-top: 2px; }
+.badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+tr.selected td { background: var(--green-light); }
+.log-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: 60vh; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.modal.wide { max-width: 760px; }
+.vip-tile { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 20px; }
+.vip-tile .vip { font-size: 20px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.vip-tile .row { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 13px; }
 
 /* ---------------- Action menu (dropdown) ---------------- */
 .action-menu { position: relative; display: inline-block; }

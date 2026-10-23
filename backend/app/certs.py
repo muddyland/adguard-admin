@@ -60,3 +60,24 @@ def ssl_context_for(cert_pem: str) -> ssl.SSLContext:
 def verify_for(tls_cert: str | None):
     """httpx `verify` value: a pinned context if we have a cert, else default TLS."""
     return ssl_context_for(tls_cert) if tls_cert else True
+
+
+# --------------------------------------------------------------------------- #
+# Agent-managed servers
+# --------------------------------------------------------------------------- #
+# A Server whose AdGuard runs behind an agent stores this marker in `tls_cert`
+# instead of a pinned certificate. Every caller already funnels through
+# verify_for(server.tls_cert), so this one branch switches all of them to the
+# mutual-TLS context (our CA as trust root, our client certificate presented)
+# without touching the call sites or the snapshots they take.
+AGENT_MTLS_MARKER = "@agent"
+
+_verify_for_pinned = verify_for
+
+
+def verify_for(tls_cert: str | None):  # noqa: F811 - deliberate wrapper
+    if tls_cert == AGENT_MTLS_MARKER:
+        from .pki import client_ssl_context, get_pki
+
+        return client_ssl_context(get_pki())
+    return _verify_for_pinned(tls_cert)

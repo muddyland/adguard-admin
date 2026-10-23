@@ -5,6 +5,16 @@ which zone each box belongs to.
 
 ![Servers](images/servers.png)
 
+## Managed and direct servers
+
+A server is either **managed** — it lives on a [host](hosts.md) with an agent,
+which installed it and fronts its API over mutual TLS — or **direct**, added by
+URL and credentials as described below. Managed servers show their host in the
+**Host** column, read-only connection details, and the state of the AdGuard role
+while it is being installed (`provisioning`). The **Balancer** column shows what
+the zone's [load balancers](load-balancing.md) think of the server: up, down,
+drained, and its share of queries.
+
 ## Adding an existing server
 
 **Servers → + Add server**, then provide:

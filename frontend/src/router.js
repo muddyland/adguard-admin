@@ -4,7 +4,9 @@ import { useAuth } from './stores/auth'
 import Login from './views/Login.vue'
 import Dashboard from './views/Dashboard.vue'
 import Zones from './views/Zones.vue'
+import Hosts from './views/Hosts.vue'
 import Servers from './views/Servers.vue'
+import LoadBalancers from './views/LoadBalancers.vue'
 import Records from './views/Records.vue'
 import DnsSettings from './views/DnsSettings.vue'
 import Filtering from './views/Filtering.vue'
@@ -17,7 +19,9 @@ const routes = [
   { path: '/login', name: 'login', component: Login, meta: { public: true } },
   { path: '/', name: 'dashboard', component: Dashboard },
   { path: '/zones', name: 'zones', component: Zones },
+  { path: '/hosts', name: 'hosts', component: Hosts },
   { path: '/servers', name: 'servers', component: Servers },
+  { path: '/load-balancers', name: 'load-balancers', component: LoadBalancers },
   { path: '/records', name: 'records', component: Records },
   { path: '/dns-settings', name: 'dns-settings', component: DnsSettings },
   { path: '/filtering', name: 'filtering', component: Filtering },
