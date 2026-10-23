@@ -18,4 +18,5 @@ dist/
 # Tool caches and local PKI material
 .pytest_cache/
 .ruff_cache/
-pki/
+/backend/pki/
+/pki/
