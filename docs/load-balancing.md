@@ -180,6 +180,14 @@ everyone.
   queries to the VIP are answered by the VIP owner's own AdGuard alone, so
   nothing is balanced yet. The loopback VIP and ARP settings are per network
   namespace and need nothing on the node.
+- **AdGuard runs on the host network.** The agent starts the AdGuard container
+  with `--network host` rather than published ports, because Docker implements
+  a published port as a DNAT rule in PREROUTING: on an IPVS director that
+  rewrite happens before IPVS sees the packet, so every query to the VIP would
+  be answered by the director's own AdGuard and nothing would be balanced.
+  Host networking also drops the userland proxy that loopback-published ports
+  need. AdGuard's listen addresses are managed in its configuration file
+  instead, exactly as on a native install.
 - **Unprivileged containers cannot be IPVS directors.** Writing the IPVS
   table needs `CAP_NET_ADMIN` in the host's own namespace, which an
   unprivileged container's root never has; keepalived logs

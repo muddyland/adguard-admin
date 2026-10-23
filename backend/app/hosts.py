@@ -154,6 +154,11 @@ def adguard_spec(server: Server, *, colocated: bool, password: str | None, ipvs:
         "enabled": bool(server.enabled),
         "install_method": (server.install_method or InstallMethod.docker).value,
         "image": settings.adguard_image,
+        # Host networking: a published port is a DNAT rule in PREROUTING, which
+        # hides VIP traffic from IPVS on a director and needs Docker's userland
+        # proxy for loopback ports. On the host network AdGuard binds like a
+        # native install and the agent manages the binds in its config file.
+        "network": "host",
         "web_bind": "0.0.0.0" if server.expose_web_ui else "127.0.0.1",
         "web_port": 3000,
         "dns_bind": dns_bind,

@@ -53,6 +53,32 @@ console keys; 0600), `agent.key`, `agent.crt`, `ca.crt` in the config dir;
 Plus `GET /v1/info`, `GET /v1/health`, `POST /v1/services/{name}/restart`,
 `GET /v1/logs`, `POST /v1/cert/renew`, `PUT /v1/cert`.
 
+### The AdGuard container runs on the host network
+
+The AdGuard spec's `network` is `host` (default) or `bridge`. Host networking
+is the default for two reasons found the hard way on an IPVS director:
+
+- A published port (`-p`) is a DNAT rule in PREROUTING, which runs before
+  routing and therefore before IPVS's LOCAL_IN hook. On a host that owns the
+  zone VIP and also runs AdGuard in a bridged container, every packet to
+  `VIP:53` is rewritten to the container's bridge address before IPVS can see
+  it: the owner answers all queries itself, the kernel table stays empty and
+  nothing is balanced. With `--network host` AdGuard binds the host's
+  addresses directly and IPVS sees the packets unrewritten.
+- The same DNAT needs Docker's userland proxy for a loopback-published port
+  (`127.0.0.1:3000`), which some daemons run without; the agent then cannot
+  reach the web API at all.
+
+In host mode the agent runs the wizard with the spec's real binds
+(`web_bind:web_port`, `dns_bind[0]:dns_port`) and afterwards keeps
+`AdGuardHome.yaml` in the `adguardhome-conf` volume (path from
+`docker volume inspect`) in line with the full spec, restarting the container
+when `dns.bind_hosts`, `dns.port` or `http.address` differ, exactly as the
+bare-metal path does. Bridge mode keeps the old behaviour (wizard on
+`0.0.0.0:3000`/`0.0.0.0:53` inside the container, ports mapped). Switching
+modes changes the spec hash, so an existing container is recreated once; the
+volumes carry its configuration over.
+
 ## Layout
 
 | Package | Role |

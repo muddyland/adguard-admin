@@ -15,6 +15,11 @@ over mutual TLS**.
   servers), and the loopback VIP plus ARP settings that make a host a
   direct-routing backend. The agent re-applies the last desired state after a
   reboot without waiting for the control plane.
+- **Runs AdGuard on the host network.** The AdGuard container uses
+  `--network host`; the agent sets its listen addresses in `AdGuardHome.yaml`
+  (loopback for the UI unless *expose web UI* is on; the DNS bind the zone's
+  balancing mode needs). No published ports, so no Docker NAT in front of DNS,
+  which IPVS direct routing requires. See [Load balancing](load-balancing.md#requirements-and-ports).
 - **Fronts AdGuard's API.** AdGuard's admin interface stays on loopback; the
   control plane reaches it through the agent, so no AdGuard credential ever
   crosses the LAN in clear text and nothing on the network can lock the control

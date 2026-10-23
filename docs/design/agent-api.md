@@ -658,3 +658,24 @@ not running on this host; see its log"; otherwise "keepalived is running and
 the module is loaded but no service is programmed; check the keepalived log
 for the virtual_server section". Backend rows show `weight` and the
 connection counters even when packet counters are null.
+
+### 9.4 AdGuard container on the host network
+
+Docker publishes a port with a DNAT rule in PREROUTING, which runs before
+routing and before IPVS's LOCAL_IN hook. On an IPVS director that also runs
+AdGuard in a bridged container, every packet to the VIP is rewritten to the
+container's bridge address and never reaches IPVS: the owner answers all
+queries itself and the kernel table stays empty. The same DNAT also needs the
+userland proxy for loopback-published ports.
+
+The AdGuard spec gains `"network": "host" | "bridge"`, default `host`. In host
+mode the agent runs the container with `--network host` and no `-p` flags, and
+applies the binds the way the bare-metal path does: after the first-run wizard
+(which configures `web` = `web_bind:web_port` and `dns` = `dns_bind[0]:dns_port`
+directly, since there is no port mapping), it edits `AdGuardHome.yaml` in the
+`adguardhome-conf` volume (path from `docker volume inspect`) whenever
+`dns.bind_hosts`, `dns.port` or `http.address` differ from the spec, and
+restarts the container. Bridge mode keeps the previous behaviour. The label
+hash changes with the field, so existing containers are recreated once; the
+volumes carry the configuration over. The control plane always sends
+`"network": "host"`; a per-server switch is not exposed in this version.

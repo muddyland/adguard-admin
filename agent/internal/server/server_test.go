@@ -250,6 +250,9 @@ func TestAdGuardPutConvergesAndProxies(t *testing.T) {
 	spec := map[string]any{
 		"enabled": true, "install_method": "docker", "web_bind": "127.0.0.1", "web_port": port,
 		"dns_bind": []string{"0.0.0.0"}, "dns_port": 53, "admin_username": "admin", "admin_password": "s3cret",
+		// Bridge mode: this test checks the port mapping and the in-container
+		// wizard; host mode has its own tests in the adguard package.
+		"network": "bridge",
 	}
 	raw, _ := json.Marshal(spec)
 	req, _ := http.NewRequest(http.MethodPut, f.srv.URL+"/v1/adguard", bytes.NewReader(raw))

@@ -44,7 +44,19 @@ type Spec struct {
 	DNSPort       int      `json:"dns_port"`
 	AdminUsername string   `json:"admin_username"`
 	AdminPassword string   `json:"admin_password"`
+	// Network is the container's network mode: "host" (default) or "bridge".
+	// Host networking is the default because a published port is a DNAT rule
+	// in PREROUTING, which runs before IPVS's LOCAL_IN hook: on a director
+	// that also runs AdGuard in a bridged container, packets to the VIP are
+	// rewritten to the container before IPVS can see them, so the owner answers
+	// everything itself and nothing is balanced. It also needs Docker's
+	// userland proxy to reach a loopback-published port.
+	Network string `json:"network"`
 }
+
+// WizardBase is where a fresh instance's first-run wizard listens on the host
+// network (the wizard always binds :3000 until configured).
+const WizardBase = "http://127.0.0.1:3000"
 
 // LocalBase is the loopback URL of the web API.
 func (s *Spec) LocalBase() string { return fmt.Sprintf("http://127.0.0.1:%d", s.WebPort) }
@@ -56,6 +68,9 @@ type Role struct {
 	BareDir     string        // /opt/AdGuardHome
 	WaitTimeout time.Duration // how long to wait for the web API after a start
 	Sleep       func(time.Duration)
+	// WizardBase is where a fresh host-network container's wizard answers;
+	// tests point it at a mock.
+	WizardBase string
 	// Fetch downloads a URL (the native installer); tests replace it.
 	Fetch func(ctx context.Context, url string) ([]byte, error)
 }
@@ -78,6 +93,7 @@ func New(h services.Host) *Role {
 		BareDir:     "/opt/AdGuardHome",
 		WaitTimeout: 90 * time.Second,
 		Sleep:       time.Sleep,
+		WizardBase:  WizardBase,
 	}
 	r.Fetch = func(ctx context.Context, url string) ([]byte, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -111,6 +127,7 @@ func (r *Role) Decode(raw []byte) (any, error) {
 		DNSPort       int      `json:"dns_port"`
 		AdminUsername string   `json:"admin_username"`
 		AdminPassword string   `json:"admin_password"`
+		Network       string   `json:"network"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&in); err != nil {
@@ -118,10 +135,16 @@ func (r *Role) Decode(raw []byte) (any, error) {
 	}
 	s := &Spec{
 		Enabled: true, InstallMethod: "docker", Image: DefaultImage, WebBind: "127.0.0.1",
-		WebPort: 3000, DNSBind: []string{"0.0.0.0"}, DNSPort: 53,
+		WebPort: 3000, DNSBind: []string{"0.0.0.0"}, DNSPort: 53, Network: "host",
 	}
 	if in.Enabled != nil {
 		s.Enabled = *in.Enabled
+	}
+	if in.Network != "" {
+		if in.Network != "host" && in.Network != "bridge" {
+			return nil, fmt.Errorf("network must be host or bridge")
+		}
+		s.Network = in.Network
 	}
 	if in.InstallMethod != "" {
 		s.InstallMethod = in.InstallMethod
@@ -195,14 +218,20 @@ func (r *Role) Converge(ctx context.Context, spec any, hash string, report roles
 // ---------------------------------------------------------------- docker ----
 
 // RunArgs is the `docker run` argument list for a spec (exported for tests).
+// Host networking publishes nothing: AdGuard binds the spec's addresses
+// itself, exactly as a native install does, and the kernel sees the packets
+// unrewritten. Bridge mode maps the ports the classic way.
 func RunArgs(s *Spec, hash string) []string {
 	args := []string{
 		"run", "-d", "--name", ContainerName, "--restart", "unless-stopped",
 		"-l", labelManaged + "=true", "-l", labelHash + "=" + hash,
 		"-v", "adguardhome-work:/opt/adguardhome/work",
 		"-v", "adguardhome-conf:/opt/adguardhome/conf",
-		"-p", fmt.Sprintf("%s:%d:3000/tcp", s.WebBind, s.WebPort),
 	}
+	if s.Network != "bridge" {
+		return append(append(args, "--network", "host"), s.Image)
+	}
+	args = append(args, "-p", fmt.Sprintf("%s:%d:3000/tcp", s.WebBind, s.WebPort))
 	for _, b := range s.DNSBind {
 		args = append(args,
 			"-p", fmt.Sprintf("%s:%d:53/tcp", b, s.DNSPort),
@@ -245,14 +274,83 @@ func (r *Role) convergeDocker(ctx context.Context, s *Spec, hash string, report 
 		}
 	}
 	report("configuring", "waiting for AdGuard Home to answer")
+	if s.Network == "bridge" {
+		// The port mapping does the binding; inside the container AdGuard
+		// listens on every address and the canonical ports.
+		if err := r.waitWeb(ctx, s.LocalBase()); err != nil {
+			return roles.Outcome{}, err
+		}
+		version, err := r.wizardOrVerify(ctx, s, s.LocalBase(), s.LocalBase(), configureBody(s, "0.0.0.0", 3000, "0.0.0.0", 53))
+		if err != nil {
+			return roles.Outcome{}, err
+		}
+		return roles.Outcome{Version: version, Enabled: true}, nil
+	}
+	return r.convergeHostNetwork(ctx, s, report)
+}
+
+// convergeHostNetwork finishes a container that shares the host's network
+// namespace. A fresh instance's wizard answers on :3000; a configured one on
+// the spec's web address. The wizard is told the real binds, and anything the
+// wizard cannot express (several DNS bind addresses, a changed port later) is
+// applied to AdGuardHome.yaml in the conf volume, as the native path does.
+func (r *Role) convergeHostNetwork(ctx context.Context, s *Spec, report roles.Reporter) (roles.Outcome, error) {
+	if err := r.waitWebAny(ctx, r.WizardBase, s.LocalBase()); err != nil {
+		return roles.Outcome{}, err
+	}
+	body := configureBody(s, s.WebBind, s.WebPort, s.DNSBind[0], s.DNSPort)
+	version, err := r.wizardOrVerify(ctx, s, r.WizardBase, s.LocalBase(), body)
+	if err != nil {
+		return roles.Outcome{}, err
+	}
+	yamlPath, err := r.confVolumeYAML(ctx)
+	if err != nil {
+		return roles.Outcome{}, err
+	}
+	raw, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return roles.Outcome{}, fmt.Errorf("read %s: %w", yamlPath, err)
+	}
+	have, err := aghyaml.Read(raw)
+	if err != nil {
+		return roles.Outcome{}, fmt.Errorf("read %s: %w", yamlPath, err)
+	}
+	want := aghyaml.Binds{DNSBindHosts: s.DNSBind, DNSPort: s.DNSPort, HTTPAddress: net.JoinHostPort(s.WebBind, strconv.Itoa(s.WebPort))}
+	if sameBinds(have, want) {
+		return roles.Outcome{Version: version, Enabled: true}, nil
+	}
+	report("configuring", "applying listen addresses")
+	if _, _, err := r.Host.R.Run(ctx, "docker", "stop", ContainerName); err != nil {
+		return roles.Outcome{}, err
+	}
+	if err := aghyaml.ApplyFile(yamlPath, want); err != nil {
+		return roles.Outcome{}, err
+	}
+	if _, _, err := r.Host.R.Run(ctx, "docker", "start", ContainerName); err != nil {
+		return roles.Outcome{}, err
+	}
 	if err := r.waitWeb(ctx, s.LocalBase()); err != nil {
 		return roles.Outcome{}, err
 	}
-	version, err := r.wizardOrVerify(ctx, s, s.LocalBase(), s.LocalBase(), configureBody(s, "0.0.0.0", 3000, "0.0.0.0", 53))
+	version, err = r.wizardOrVerify(ctx, s, s.LocalBase(), s.LocalBase(), body)
 	if err != nil {
 		return roles.Outcome{}, err
 	}
 	return roles.Outcome{Version: version, Enabled: true}, nil
+}
+
+// confVolumeYAML is the path of AdGuardHome.yaml inside the conf volume, as
+// seen from the host.
+func (r *Role) confVolumeYAML(ctx context.Context) (string, error) {
+	out, _, err := r.Host.R.Run(ctx, "docker", "volume", "inspect", "-f", "{{.Mountpoint}}", "adguardhome-conf")
+	if err != nil {
+		return "", fmt.Errorf("locate the adguardhome-conf volume: %w", err)
+	}
+	mount := strings.TrimSpace(string(out))
+	if mount == "" {
+		return "", errors.New("the adguardhome-conf volume has no mountpoint")
+	}
+	return filepath.Join(mount, "AdGuardHome.yaml"), nil
 }
 
 // recreate swaps the container, keeping the old one until the new one answers.
@@ -504,6 +602,31 @@ func (r *Role) waitWeb(ctx context.Context, base string) error {
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("AdGuard Home did not answer on %s within %s (last error: %v)", base, r.WaitTimeout, lastErr)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r.Sleep(2 * time.Second)
+	}
+}
+
+// waitWebAny waits until any of the bases answers; a fresh host-network
+// container listens on the wizard port, a configured one on its web address.
+func (r *Role) waitWebAny(ctx context.Context, bases ...string) error {
+	deadline := time.Now().Add(r.WaitTimeout)
+	var lastErr error
+	for {
+		for _, base := range bases {
+			status, _, err := r.do(ctx, http.MethodGet, base+"/control/status", nil, nil)
+			if status != 0 {
+				return nil
+			}
+			if err != nil {
+				lastErr = err
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("AdGuard Home did not answer on %s within %s (last error: %v)", strings.Join(bases, " or "), r.WaitTimeout, lastErr)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
