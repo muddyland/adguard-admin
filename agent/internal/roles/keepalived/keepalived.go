@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,8 +17,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"adguard-admin/agent/internal/config"
+	"adguard-admin/agent/internal/execx"
 	"adguard-admin/agent/internal/roles"
 	"adguard-admin/agent/internal/services"
 )
@@ -88,12 +91,20 @@ type Role struct {
 	Host        services.Host
 	ConfPath    string
 	ModulesLoad string
-	Dirs        config.Dirs
-	Interfaces  func() ([]net.Interface, error)
-	Addrs       func(net.Interface) ([]net.Addr, error)
+	// ProcRoot is /proc; tests point it at a directory of their own.
+	ProcRoot string
+	// DockerEnvPath is /.dockerenv, the fallback container marker.
+	DockerEnvPath string
+	Dirs          config.Dirs
+	Interfaces    func() ([]net.Interface, error)
+	Addrs         func(net.Interface) ([]net.Addr, error)
+	Now           func() time.Time
+	Logger        *log.Logger
 
-	mu      sync.Mutex
-	drained map[string]bool
+	mu           sync.Mutex
+	drained      map[string]bool
+	lastRendered string // the config written by the last converge
+	lastModprobe string // the last `modprobe ip_vs` failure, "" when it worked
 }
 
 // New builds a role with production defaults.
@@ -104,9 +115,11 @@ func New(h services.Host) *Role {
 // NewWithDirs builds a role that persists drains under dirs.
 func NewWithDirs(h services.Host, dirs config.Dirs) *Role {
 	r := &Role{
-		Host: h, ConfPath: ConfPath, ModulesLoad: ModulesLoadPath, Dirs: dirs,
+		Host: h, ConfPath: ConfPath, ModulesLoad: ModulesLoadPath, ProcRoot: "/proc", DockerEnvPath: "/.dockerenv", Dirs: dirs,
 		Interfaces: net.Interfaces,
 		Addrs:      func(i net.Interface) ([]net.Addr, error) { return i.Addrs() },
+		Now:        time.Now,
+		Logger:     log.Default(),
 		drained:    map[string]bool{},
 	}
 	if dirs.State != "" {
@@ -425,9 +438,10 @@ func (r *Role) Converge(ctx context.Context, spec any, hash string, report roles
 		if err := config.WriteFileAtomic(r.ModulesLoad, []byte("ip_vs\n"), 0o644); err != nil {
 			return roles.Outcome{}, err
 		}
-		// Fails inside containers and on kernels with ip_vs built in; keepalived
-		// loads the module itself when it programs the first service.
-		_, _, _ = r.Host.R.Run(ctx, "modprobe", "ip_vs")
+		// Every converge, not just the first: a failure here (no module on
+		// this kernel, a container) does not stop the converge, but it is the
+		// first thing the diagnostics show when no service gets programmed.
+		r.modprobe(ctx)
 	}
 	iface := s.Interface
 	if iface == "" {
@@ -437,6 +451,9 @@ func (r *Role) Converge(ctx context.Context, spec any, hash string, report roles
 		}
 	}
 	rendered := Render(s, iface)
+	r.mu.Lock()
+	r.lastRendered = rendered
+	r.mu.Unlock()
 	current, _ := os.ReadFile(r.ConfPath)
 	changed := string(current) != rendered
 	if changed {
@@ -493,27 +510,126 @@ func (r *Role) Status(ctx context.Context, spec any, c roles.Common) (any, error
 	return out, nil
 }
 
-// ipvsStatus reads the kernel table through ipvsadm and sums each backend's
-// services. Out-direction counters are left out: replies bypass the director
-// in direct routing, so they would always read zero.
-func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
-	services := map[string]*ipvsService{}
-	var order []string
-	plain, _, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln")
+// modprobe loads ip_vs and remembers how it went for the diagnostics. Inside
+// a container the call can never work: modules belong to the host kernel, so
+// the log says where to load it instead.
+func (r *Role) modprobe(ctx context.Context) {
+	_, errOut, err := r.Host.R.Run(ctx, "modprobe", "ip_vs")
+	msg := ""
 	if err != nil {
-		return map[string]any{"present": false, "services": 0, "backends": []any{}, "message": "ipvsadm: " + err.Error()}
+		msg = execx.LastLine(string(errOut))
+		if msg == "" {
+			msg = err.Error()
+		}
+		if kind := r.containerKind(); kind != "" && r.Logger != nil {
+			r.Logger.Printf("keepalived: modprobe ip_vs failed (%s); this host is a %s container, so the ip_vs module must be loaded on the container's host node (e.g. `modprobe ip_vs` there, persisted in /etc/modules-load.d)", msg, kind)
+		}
 	}
-	order = parseListing(string(plain), "plain", services)
-	if stats, _, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln", "--stats", "--exact"); err == nil {
-		parseListing(string(stats), "stats", services)
+	r.mu.Lock()
+	r.lastModprobe = msg
+	r.mu.Unlock()
+}
+
+// containerKind reports the container runtime this host runs under: the
+// `container=` variable in PID 1's environment (lxc, docker, podman,
+// systemd-nspawn), or "docker" when only /.dockerenv exists; "" on bare metal
+// and in VMs.
+func (r *Role) containerKind() string {
+	if raw, err := os.ReadFile(filepath.Join(r.ProcRoot, "1", "environ")); err == nil {
+		for _, kv := range strings.Split(string(raw), "\x00") {
+			if v, ok := strings.CutPrefix(kv, "container="); ok {
+				v = strings.TrimSpace(v)
+				switch {
+				case v == "":
+				case strings.HasPrefix(v, "lxc"):
+					return "lxc"
+				case v == "docker", v == "oci":
+					return "docker"
+				case v == "podman", v == "systemd-nspawn":
+					return v
+				default:
+					return v
+				}
+			}
+		}
 	}
-	if rate, _, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln", "--rate", "--exact"); err == nil {
-		parseListing(string(rate), "rate", services)
+	if _, err := os.Stat(r.DockerEnvPath); err == nil {
+		return "docker"
 	}
+	return ""
+}
+
+// readIPVS returns the kernel table from ipvsadm, or from /proc/net/ip_vs
+// when ipvsadm is missing or fails. counters is false when the source
+// carries no packet statistics (the /proc table).
+func (r *Role) readIPVS(ctx context.Context) (services map[string]*ipvsService, order []string, counters bool, message string) {
+	services = map[string]*ipvsService{}
+	if _, err := r.Host.R.LookPath("ipvsadm"); err == nil {
+		plain, errOut, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln")
+		if err == nil {
+			order = parseListing(string(plain), "plain", services)
+			if stats, _, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln", "--stats", "--exact"); err == nil {
+				parseListing(string(stats), "stats", services)
+			}
+			if rate, _, err := r.Host.R.Run(ctx, "ipvsadm", "-Ln", "--rate", "--exact"); err == nil {
+				parseListing(string(rate), "rate", services)
+			}
+			return services, order, true, ""
+		}
+		message = execx.LastLine(string(errOut))
+		if message == "" {
+			message = err.Error()
+		}
+		message = "ipvsadm -Ln: " + message
+	} else {
+		message = "ipvsadm is not installed"
+	}
+	// Fall back to the kernel's own table.
+	raw, err := os.ReadFile(filepath.Join(r.ProcRoot, "net", "ip_vs"))
+	if err != nil {
+		return services, nil, false, message
+	}
+	services, order = parseProcIPVS(string(raw))
+	return services, order, false, message
+}
+
+// diagnostics answers the questions behind "no virtual server programmed".
+func (r *Role) diagnostics(ctx context.Context) map[string]any {
+	procPath := filepath.Join(r.ProcRoot, "net", "ip_vs")
+	_, statErr := os.Stat(procPath)
+	_, readErr := os.ReadFile(procPath)
+	_, lookErr := r.Host.R.LookPath("ipvsadm")
+	r.mu.Lock()
+	rendered, modprobeErr := r.lastRendered, r.lastModprobe
+	r.mu.Unlock()
+	if rendered == "" {
+		if current, err := os.ReadFile(r.ConfPath); err == nil {
+			rendered = string(current)
+		}
+	}
+	return map[string]any{
+		"ipvsadm":                    lookErr == nil,
+		"module_loaded":              statErr == nil,
+		"proc_ip_vs":                 readErr == nil,
+		"config_has_virtual_servers": strings.Contains(rendered, "virtual_server"),
+		"keepalived_running":         r.Host.UnitState(ctx, UnitName).Active,
+		"modprobe_error":             modprobeErr,
+		"container":                  r.containerKind(),
+		"checked_at":                 r.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// ipvsStatus reads the kernel table and sums each backend's services.
+// Out-direction counters are left out: replies bypass the director in direct
+// routing, so they would always read zero. Packet counters are null when the
+// only source was /proc/net/ip_vs, which does not carry them.
+func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
+	services, order, counters, message := r.readIPVS(ctx)
 	type agg struct {
 		be       IPVSBackend
 		seen     int
 		up       bool
+		weight   int
 		active   float64
 		inactive float64
 		conns    float64
@@ -524,7 +640,7 @@ func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
 	}
 	aggs := map[string]*agg{}
 	for _, be := range v.Backends {
-		aggs[net.JoinHostPort(be.Address, strconv.Itoa(be.Port))] = &agg{be: be, up: true}
+		aggs[net.JoinHostPort(be.Address, strconv.Itoa(be.Port))] = &agg{be: be, up: true, weight: be.Weight}
 	}
 	count := 0
 	for _, key := range order {
@@ -540,8 +656,11 @@ func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
 				continue
 			}
 			a.seen++
-			if d.seenWeight && d.Weight <= 0 {
-				a.up = false
+			if d.seenWeight {
+				a.weight = d.Weight
+				if d.Weight <= 0 {
+					a.up = false
+				}
 			}
 			a.active += d.ActiveConns
 			a.inactive += d.InactConns
@@ -558,6 +677,12 @@ func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
 		drained[k] = val
 	}
 	r.mu.Unlock()
+	num := func(x float64) any {
+		if !counters {
+			return nil
+		}
+		return x
+	}
 	backends := make([]any, 0, len(v.Backends))
 	for _, be := range v.Backends {
 		a := aggs[net.JoinHostPort(be.Address, strconv.Itoa(be.Port))]
@@ -566,13 +691,17 @@ func (r *Role) ipvsStatus(ctx context.Context, v *IPVSSpec) map[string]any {
 			state = "up"
 		}
 		backends = append(backends, map[string]any{
-			"name": be.Name, "address": be.Address, "port": be.Port, "weight": be.Weight,
+			"name": be.Name, "address": be.Address, "port": be.Port, "weight": a.weight,
 			"state": state, "drained": drained[be.Name],
-			"active_conns": a.active, "inactive_conns": a.inactive, "conns": a.conns,
-			"in_pkts": a.inPkts, "in_bytes": a.inBytes, "cps": a.cps, "in_pps": a.inPPS,
+			"active_conns": a.active, "inactive_conns": a.inactive,
+			"conns": num(a.conns), "in_pkts": num(a.inPkts), "in_bytes": num(a.inBytes),
+			"cps": num(a.cps), "in_pps": num(a.inPPS),
 		})
 	}
-	return map[string]any{"present": count > 0, "services": count, "backends": backends}
+	return map[string]any{
+		"present": count > 0, "services": count, "backends": backends,
+		"message": message, "diagnostics": r.diagnostics(ctx),
+	}
 }
 
 // --------------------------------------------------------------- drains ----

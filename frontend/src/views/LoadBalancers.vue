@@ -135,13 +135,45 @@ function ipvsBackends(lb) {
       || byAddr.get(addrKey(b.address, b.port)) || null
     const l = f
       ? { state: f.state, drained: f.drained, qps: f.in_pps, queries: f.in_pkts, conns: f.conns,
-          active_conns: f.active_conns, inactive_conns: f.inactive_conns, in_bytes: f.in_bytes, cps: f.cps }
+          active_conns: f.active_conns, inactive_conns: f.inactive_conns, in_bytes: f.in_bytes, cps: f.cps,
+          weight: f.weight }
       : (b.live || null)
     return { ...b, live: l }
   })
+  // Packet counters are null when the agent read the table from /proc (no
+  // ipvsadm); a null share keeps the bar empty rather than claiming 0%.
   const total = rows.reduce((n, r) => n + Number(r.live?.queries || 0), 0)
-  return rows.map((r) => ({ ...r, share: total ? (Number(r.live?.queries || 0) / total) * 100 : 0 }))
+  return rows.map((r) => ({
+    ...r,
+    share: r.live?.queries == null ? null : (total ? (Number(r.live.queries) / total) * 100 : 0),
+  }))
 }
+
+// Diagnostics the agent attaches to the keepalived ipvs block (older agents send none).
+const ipvsDiag = computed(() => detailIpvs.value?.diagnostics || null)
+const DIAG_ITEMS = [
+  { key: 'ipvsadm', label: 'ipvsadm installed' },
+  { key: 'module_loaded', label: 'ip_vs kernel module loaded' },
+  { key: 'config_has_virtual_servers', label: 'virtual_server in keepalived config' },
+  { key: 'keepalived_running', label: 'keepalived running' },
+]
+// One hint for "no virtual server programmed", in the contract's priority order.
+const ipvsHint = computed(() => {
+  const d = ipvsDiag.value
+  if (!d) return 'keepalived has not applied the IPVS configuration on this host yet.'
+  if (d.module_loaded === false) {
+    if (d.container) {
+      // A container cannot load kernel modules; the node that runs it must.
+      return `This host is a ${d.container} container, so it cannot load kernel modules itself. On the node that runs it: `
+        + '`modprobe ip_vs ip_vs_wlc ip_vs_rr ip_vs_wrr ip_vs_lc ip_vs_sh` and persist them in /etc/modules-load.d/ipvs.conf, then restart keepalived here.'
+    }
+    return `the ip_vs kernel module is not loaded${d.modprobe_error ? ` (modprobe error: ${d.modprobe_error})` : ''}; check that the kernel ships it.`
+  }
+  if (d.ipvsadm === false) return 'ipvsadm is not installed; the agent installs it with keepalived, see the agent log.'
+  if (d.config_has_virtual_servers === false) return 'the rendered keepalived config has no virtual_server block: the zone VIP or mode changed and the host has not converged yet.'
+  if (d.keepalived_running === false) return 'keepalived is not running on this host; see its log.'
+  return 'keepalived is running and the module is loaded but no service is programmed; check the keepalived log for the virtual_server section.'
+})
 
 const detailStats = computed(() => live.value?.dnsdist?.stats || selected.value?.state?.stats || null)
 const detailFrontends = computed(() => live.value?.dnsdist?.frontends || selected.value?.state?.frontends || [])
@@ -453,8 +485,10 @@ onMounted(load)
           </span>
         </div>
         <div v-if="liveError" class="alert alert-error" style="margin:12px 16px 0">{{ liveError }}</div>
-        <div v-if="isIpvs(selected) && detailIpvs && detailIpvs.present === false" class="hint" style="padding:10px 16px 0">
-          No virtual server programmed yet — keepalived has not applied the IPVS configuration on this host.
+        <div v-if="isIpvs(selected) && detailIpvs && detailIpvs.present === false" class="alert alert-error" style="margin:12px 16px 0">
+          <div><strong>No virtual server programmed.</strong> {{ ipvsHint }}</div>
+          <div v-if="detailIpvs.message" class="mono" style="margin-top:6px;font-size:12px;white-space:pre-wrap">{{ detailIpvs.message }}</div>
+          <button class="btn btn-sm" style="margin-top:8px" @click="openLogs(selected, 'keepalived')">View keepalived log</button>
         </div>
         <table v-if="isIpvs(selected)">
           <thead><tr>
@@ -473,15 +507,15 @@ onMounted(load)
               </td>
               <td>
                 <div class="share-cell">
-                  <div class="share-bar" :class="liveBadge(b.live).cls"><span :style="{ width: Math.max(0, Math.min(100, b.share)).toFixed(1) + '%' }"></span></div>
-                  <span class="pct">{{ b.live ? b.share.toFixed(0) + '%' : '—' }}</span>
+                  <div class="share-bar" :class="liveBadge(b.live).cls"><span :style="{ width: (b.share == null ? 0 : Math.max(0, Math.min(100, b.share))).toFixed(1) + '%' }"></span></div>
+                  <span class="pct">{{ b.share == null ? '—' : b.share.toFixed(0) + '%' }}</span>
                 </div>
               </td>
-              <td>{{ b.live ? fixed(b.live.qps) : '—' }}</td>
-              <td>{{ b.live ? num(b.live.queries) : '—' }}</td>
-              <td>{{ b.live ? num(b.live.conns) : '—' }}</td>
-              <td>{{ b.live ? num(b.live.active_conns) + ' / ' + num(b.live.inactive_conns) : '—' }}</td>
-              <td>{{ b.weight }}</td>
+              <td>{{ b.live && b.live.qps != null ? fixed(b.live.qps) : '—' }}</td>
+              <td>{{ num(b.live?.queries) }}</td>
+              <td>{{ num(b.live?.conns) }}</td>
+              <td>{{ b.live && (b.live.active_conns != null || b.live.inactive_conns != null) ? num(b.live.active_conns) + ' / ' + num(b.live.inactive_conns) : '—' }}</td>
+              <td>{{ b.live?.weight ?? b.weight }}<span v-if="b.live?.weight != null && b.live.weight !== b.weight" class="muted" :title="'configured weight ' + b.weight"> ({{ b.weight }})</span></td>
               <td class="row-actions" v-if="auth.isEditor">
                 <button v-if="b.live?.drained" class="btn btn-sm" @click="drain(selected, b, true)">Undrain</button>
                 <button v-else class="btn btn-sm" :disabled="!b.live" @click="drain(selected, b)">Drain</button>
@@ -559,6 +593,16 @@ onMounted(load)
             <div><div class="k">Scheduler</div><div class="v">{{ ALGOS.find((a) => a.value === selected.ipvs_algo)?.label.split(' (')[0] || selected.ipvs_algo }}</div></div>
             <div><div class="k">Backends up</div><div class="v">{{ upCount(selected) }} of {{ backendsOf(selected).length }}</div></div>
             <div><div class="k">keepalived</div><div class="v mono" style="font-weight:500">{{ detailKeepalived?.version || '—' }}</div></div>
+          </div>
+          <div v-if="ipvsDiag" class="diag-list">
+            <div v-for="item in DIAG_ITEMS" :key="item.key" class="diag-item" :class="ipvsDiag[item.key] ? 'ok' : 'bad'">
+              <span class="diag-mark">{{ ipvsDiag[item.key] ? '✓' : '✗' }}</span>{{ item.label }}
+            </div>
+            <div v-if="ipvsDiag.container" class="diag-item info">
+              <span class="diag-mark">i</span>runs inside a {{ ipvsDiag.container }} container (kernel modules come from the node)
+            </div>
+            <div v-if="ipvsDiag.modprobe_error" class="hint" style="color:var(--red);margin-top:4px">modprobe: {{ ipvsDiag.modprobe_error }}</div>
+            <div v-if="ipvsDiag.checked_at" class="muted" style="font-size:11px;margin-top:4px">checked {{ fmt(ipvsDiag.checked_at) }}</div>
           </div>
           <div class="hint" style="padding:0 16px 14px">
             Direct routing: the VIP owner rewrites the destination MAC and the backend answers the client itself,

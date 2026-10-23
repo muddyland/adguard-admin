@@ -618,3 +618,43 @@ Control plane: `POST /api/servers/{id}/reinstall` (**admin**, audit-logged),
 "Reinstall AdGuard (wipe)" with a confirm that says the instance's own
 settings, query log and statistics on that host are deleted and the control
 plane's records and settings are re-applied.
+
+### 8.7 IPVS diagnostics (agent and UI)
+
+"No virtual server programmed" has several causes the agent can tell apart.
+The keepalived status `ipvs` block gains:
+
+```json
+"ipvs":{"present":false,"services":0,"backends":[],
+        "message":"ipvsadm -Ln: Can't initialize ipvs: Protocol not available",
+        "diagnostics":{"ipvsadm":true,"module_loaded":false,"proc_ip_vs":false,
+                       "config_has_virtual_servers":true,"keepalived_running":true,
+                       "modprobe_error":"modprobe: FATAL: Module ip_vs not found in directory /lib/modules/...",
+                       "checked_at":"2026-10-23T03:10:00Z"}}
+```
+
+- `ipvsadm`: the binary is on PATH. `module_loaded`: `/proc/net/ip_vs` exists
+  (the module is loaded or built in). `config_has_virtual_servers`: the config
+  the agent rendered contains at least one `virtual_server` block.
+  `keepalived_running`: the unit is active. `modprobe_error`: the last
+  `modprobe ip_vs` failure, empty when it succeeded.
+- When `ipvsadm` is missing but `/proc/net/ip_vs` exists, the agent reads the
+  kernel table from `/proc/net/ip_vs` (services, destinations, weight,
+  ActiveConn, InActConn) so `present`, `services`, `backends[].state`,
+  `weight`, `active_conns` and `inactive_conns` are still reported; packet
+  counters are then null.
+- The agent runs `modprobe ip_vs` on every keepalived converge in ipvs mode
+  (not only once) and records the error.
+
+UI (Load balancers detail, ipvs mode): the IPVS card shows the diagnostics as
+a checklist (green/red) and, when `present` is false, the `message` plus one
+hint chosen from the diagnostics: module not loaded → "the ip_vs kernel module
+is not loaded (modprobe error: …); check that the kernel ships it";
+ipvsadm missing → "ipvsadm is not installed; the agent installs it with
+keepalived, see the agent log"; no virtual_server in config → "the rendered
+keepalived config has no virtual_server block: the zone VIP or mode changed
+and the host has not converged yet"; keepalived not running → "keepalived is
+not running on this host; see its log"; otherwise "keepalived is running and
+the module is loaded but no service is programmed; check the keepalived log
+for the virtual_server section". Backend rows show `weight` and the
+connection counters even when packet counters are null.

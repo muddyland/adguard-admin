@@ -166,6 +166,20 @@ everyone.
   the zone's hosts, sent as unicast to the other balancers' addresses.
 - In IPVS mode the director and every backend must share a Layer 2 segment;
   clients may be anywhere routed to the VIP.
+- **Containers (Proxmox LXC and similar).** A container cannot load kernel
+  modules, so load IPVS on the node that runs it, once, and it is visible to
+  every container there:
+
+  ```bash
+  modprobe ip_vs ip_vs_wlc ip_vs_rr ip_vs_wrr ip_vs_lc ip_vs_sh
+  printf 'ip_vs\nip_vs_wlc\nip_vs_rr\nip_vs_wrr\nip_vs_lc\nip_vs_sh\n' > /etc/modules-load.d/ipvs.conf
+  ```
+
+  Then restart keepalived in the container. Until then the balancer shows
+  "No virtual server programmed" with that exact hint, VRRP still works, and
+  queries to the VIP are answered by the VIP owner's own AdGuard alone, so
+  nothing is balanced yet. The loopback VIP and ARP settings are per network
+  namespace and need nothing on the node.
 - The VIP must be in a subnet the hosts share; it is held by one host at a
   time and must not be handed out by DHCP.
 - dnsdist and keepalived are installed by the agent: dnsdist as the official

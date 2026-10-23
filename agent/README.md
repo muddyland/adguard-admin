@@ -106,6 +106,39 @@ and the dnsdist manual page on 2026-10-23:
   (`[{name,type,value}]`), key in header `X-API-Key`. There is no `drops`
   field; the contract's `drop_rate` maps `dropRate`.
 
+## IPVS diagnostics
+
+The keepalived status `ipvs` block always carries a `diagnostics` object so
+"no virtual server programmed" can be told apart from its causes:
+
+| Field | Meaning |
+|---|---|
+| `ipvsadm` | the binary is on PATH |
+| `module_loaded` | `/proc/net/ip_vs` exists (module loaded or built in) |
+| `proc_ip_vs` | that file is readable |
+| `config_has_virtual_servers` | the config the agent last rendered (or the one on disk) contains a `virtual_server` block |
+| `keepalived_running` | the unit is active |
+| `modprobe_error` | the last `modprobe ip_vs` failure; the agent runs modprobe on every converge in ipvs mode and never fails the converge on it |
+| `container` | `lxc`, `docker`, `podman`, `systemd-nspawn` or `""`, from `container=` in PID 1's environment, else `/.dockerenv` |
+| `checked_at` | when the checks ran |
+
+`message` is ipvsadm's last stderr line when it fails (for example
+`ipvsadm -Ln: Are you sure that IP Virtual Server is built in the kernel or as module?`),
+`ipvsadm is not installed`, or empty.
+
+When ipvsadm is missing or fails but `/proc/net/ip_vs` exists, the agent reads
+the kernel table itself (hex addresses and ports, IPv6 in brackets): `present`,
+`services`, each backend's `state`, `weight`, `active_conns` and
+`inactive_conns` are still reported; `conns`, `in_pkts`, `in_bytes`, `cps` and
+`in_pps` are then JSON `null`, never zero, so a reader can tell "unknown" from
+"idle".
+
+**Containers (Proxmox LXC and the like).** `modprobe` cannot load modules
+inside a container; `ip_vs` has to be loaded on the container's host node
+(`modprobe ip_vs` there, persisted in `/etc/modules-load.d/`). When modprobe
+fails and `container` is set, the agent log says so explicitly. keepalived
+inside the container can then program IPVS once the host kernel has the module.
+
 ## Verified facts the IPVS mode is built on
 
 From keepalived.conf(5) (Debian bookworm, keepalived 2.2.x), read 2026-10-23:
