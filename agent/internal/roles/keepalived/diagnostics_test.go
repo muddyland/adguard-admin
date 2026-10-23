@@ -109,6 +109,9 @@ func TestDiagnosticsFromProcRootAndFakeExec(t *testing.T) {
 		"modprobe_error":         "modprobe: FATAL: Module ip_vs not found in directory /lib/modules/6.1.0",
 		"container":              "",
 		"ipvs_permission_denied": false,
+		"backup_only":            false,
+		"sync_daemon":            "none",
+		"sysctl_error":           "",
 		"checked_at":             "2026-10-23T03:10:00Z",
 	}
 	for k, v := range want {
@@ -117,20 +120,52 @@ func TestDiagnosticsFromProcRootAndFakeExec(t *testing.T) {
 		}
 	}
 
-	// Everything present.
-	fake = &execx.Fake{Programs: map[string]bool{"systemctl": true, "ipvsadm": true}, Handler: systemctlHandler(true)}
+	// Everything present, on a standby: backup sync daemon and backup_only set.
+	inner := systemctlHandler(true)
+	fake = &execx.Fake{Programs: map[string]bool{"systemctl": true, "ipvsadm": true}, Handler: func(name string, args []string) execx.Result {
+		if name == "ipvsadm" && len(args) == 2 && args[1] == "--daemon" {
+			return execx.Result{Stdout: "backup sync daemon (mcast=eth0, syncid=55, maxlen=1472)\n"}
+		}
+		return inner(name, args)
+	}}
 	r, _ = procRole(t, fake, true)
+	if err := os.MkdirAll(filepath.Dir(r.backupOnlyPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.backupOnlyPath(), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	r.mu.Lock()
 	r.lastRendered = "virtual_server 192.168.2.55 53 {\n}\n"
 	r.mu.Unlock()
 	d = r.diagnostics(context.Background())
-	for _, k := range []string{"ipvsadm", "module_loaded", "proc_ip_vs", "config_has_virtual_servers", "keepalived_running"} {
+	for _, k := range []string{"ipvsadm", "module_loaded", "proc_ip_vs", "config_has_virtual_servers", "keepalived_running", "backup_only"} {
 		if d[k] != true {
 			t.Errorf("%s should be true: %v", k, d)
 		}
 	}
 	if d["modprobe_error"] != "" {
 		t.Errorf("modprobe_error should be empty, got %v", d["modprobe_error"])
+	}
+	if d["sync_daemon"] != "backup" {
+		t.Errorf("sync_daemon = %v, want backup", d["sync_daemon"])
+	}
+	spec, err := r.Decode([]byte(procSpecJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := r.ipvsStatus(context.Background(), spec.(*Spec).IPVS); st["director"] != false {
+		t.Errorf("a standby with backup_only must not report director=true: %v", st["director"])
+	}
+	// The owner runs the master daemon and directs.
+	fake.Handler = func(name string, args []string) execx.Result {
+		if name == "ipvsadm" && len(args) == 2 && args[1] == "--daemon" {
+			return execx.Result{Stdout: "master sync daemon (mcast=eth0, syncid=55, maxlen=1472)\n"}
+		}
+		return inner(name, args)
+	}
+	if st := r.ipvsStatus(context.Background(), spec.(*Spec).IPVS); st["director"] != true || r.diagnostics(context.Background())["sync_daemon"] != "master" {
+		t.Errorf("owner should direct: %v", st["director"])
 	}
 	// With no converge in this process, the on-disk config stands in for the rendered one.
 	r2, dir := procRole(t, fake, true)

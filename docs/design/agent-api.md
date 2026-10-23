@@ -473,15 +473,18 @@ Rendered after the `vrrp_instance`, one block per port and protocol:
 ```
 virtual_server 10.0.0.53 53 {
   delay_loop 2
-  lb_algo wlc
-  lb_kind DR
+  lvs_sched wlc
+  lvs_method DR
   protocol UDP
   real_server 10.0.0.11 53 {
     weight 1
     inhibit_on_failure
-    MISC_CHECK { misc_path "/usr/local/bin/adguard-admin-agent probe-dns 10.0.0.11:53" misc_timeout 2 }
-    retry 2
-    delay_before_retry 1
+    MISC_CHECK {
+      misc_path "/usr/local/bin/adguard-admin-agent probe-dns 10.0.0.11:53"
+      misc_timeout 2
+      retry 2
+      delay_before_retry 1
+    }
   }
 }
 ```
@@ -490,11 +493,34 @@ status below can report it as `down` instead of it vanishing. The agent installs
 `ipvsadm` alongside `keepalived` and makes sure the `ip_vs` module loads
 (`/etc/modules-load.d/adguard-admin-ipvs.conf`).
 
+**Standby directors must not direct.** Every director carries the same
+virtual_server table, so a standby that receives a packet the owner has
+direct-routed to it (the standby is a backend too) would re-schedule it, and
+the two kernels bounce the query between them until its TTL runs out; with
+three directors about half of all queries were lost that way. Two things stop
+it, both applied by the agent in ipvs mode:
+
+- `global_defs` gains `lvs_sync_daemon <iface> adguard_admin_<router_id> id
+  <router_id>`. keepalived then runs the IPVS *master* sync daemon on the VIP
+  owner and the *backup* sync daemon on every standby, following the VRRP
+  state.
+- `net.ipv4.vs.backup_only = 1`, set with `sysctl -w` on every converge and
+  persisted in `/etc/sysctl.d/91-adguard-admin-ipvs-director.conf`. With it
+  the kernel skips IPVS entirely while the backup sync daemon runs, so a
+  standby delivers VIP packets to its own resolver like any other backend.
+  The file is removed and the value reset when the host stops being a
+  director.
+
+The sync daemon also replicates connection state to the standbys (multicast
+224.0.0.81:8848 on the VIP interface), which is what makes a failover keep
+TCP sessions; UDP DNS does not need it. The key exists only once `ip_vs` is
+loaded; a failure is reported as `sysctl_error` in the diagnostics (8.7).
+
 ### 8.2 keepalived status, `ipvs` block (agent `GET /v1/keepalived`)
 
 ```json
 {"state":"ready", "...":"as before",
- "ipvs":{"present":true,"services":2,
+ "ipvs":{"present":true,"services":2,"director":true,
          "backends":[{"name":"dns-a-1","address":"10.0.0.11","port":53,"weight":1,
                       "state":"up","drained":false,
                       "active_conns":0,"inactive_conns":12,"conns":1234,
@@ -505,7 +531,10 @@ shelled); UDP and TCP services for the same backend are summed. `state` is
 `up` when the backend's IPVS weight is above zero on every service, `down`
 otherwise. Out-direction counters are omitted on purpose: in direct routing the
 replies never pass the director. `present:false` when no virtual server is
-programmed.
+programmed. `director` is false on a standby (backup sync daemon running with
+`backup_only` set): that host schedules nothing and its counters date from its
+last spell as owner; the UI shows "standby" in place of its QPS and the
+Dashboard's VIP tile reads the owner's numbers.
 
 ### 8.3 drains in ipvs mode
 
@@ -630,6 +659,8 @@ The keepalived status `ipvs` block gains:
         "diagnostics":{"ipvsadm":true,"module_loaded":false,"proc_ip_vs":false,
                        "config_has_virtual_servers":true,"keepalived_running":true,
                        "modprobe_error":"modprobe: FATAL: Module ip_vs not found in directory /lib/modules/...",
+                       "container":"lxc","ipvs_permission_denied":false,
+                       "backup_only":true,"sync_daemon":"backup","sysctl_error":"",
                        "checked_at":"2026-10-23T03:10:00Z"}}
 ```
 
@@ -645,6 +676,12 @@ The keepalived status `ipvs` block gains:
   counters are then null.
 - The agent runs `modprobe ip_vs` on every keepalived converge in ipvs mode
   (not only once) and records the error.
+- `backup_only`: the live value of `net.ipv4.vs.backup_only` is 1.
+  `sync_daemon`: `master`, `backup`, `both` or `none`, from
+  `ipvsadm -Ln --daemon`. `sysctl_error`: the last failure writing the sysctl
+  or its sysctl.d file, empty when it worked. `director` (8.2) is derived
+  from these two: a host with the backup daemon and `backup_only` is a
+  standby.
 
 UI (Load balancers detail, ipvs mode): the IPVS card shows the diagnostics as
 a checklist (green/red) and, when `present` is false, the `message` plus one

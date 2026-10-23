@@ -28,6 +28,9 @@ func TestRender(t *testing.T) {
 			t.Errorf("config lacks %q\n%s", want, conf)
 		}
 	}
+	if strings.Contains(conf, "lvs_sync_daemon") {
+		t.Errorf("VRRP-only config must not carry lvs_sync_daemon\n%s", conf)
+	}
 }
 
 func TestDecodeRejects(t *testing.T) {

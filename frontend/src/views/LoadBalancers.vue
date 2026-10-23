@@ -86,6 +86,14 @@ function qpsOf(lb) {
   return bs.reduce((n, b) => n + Number(b.live.qps || 0), 0)
 }
 function vipOwner(lb) { return !!lb.keepalived_state?.vip_owner }
+// In ipvs mode only the VIP owner schedules queries; a standby's counters are
+// history from its last spell as owner. Agents report `director` since the
+// sync-daemon fix; older ones fall back to the VIP ownership flag.
+function ipvsStandby(lb) {
+  if (!isIpvs(lb) || !lb.keepalived_state) return false
+  const d = lb.keepalived_state?.ipvs?.director
+  return d == null ? !vipOwner(lb) : !d
+}
 function ownerOf(zone) {
   const lb = lbs.value.find((l) => l.zone_id === zone.id && vipOwner(l))
   return lb ? agentName(lb.agent_id) : null
@@ -156,7 +164,17 @@ const DIAG_ITEMS = [
   { key: 'module_loaded', label: 'ip_vs kernel module loaded' },
   { key: 'config_has_virtual_servers', label: 'virtual_server in keepalived config' },
   { key: 'keepalived_running', label: 'keepalived running' },
+  // Reported by agents since the sync-daemon fix; hidden for older agents
+  // rather than shown as a failure.
+  { key: 'backup_only', label: 'standby does not re-schedule (net.ipv4.vs.backup_only)', optional: true },
 ]
+const diagItems = computed(() => DIAG_ITEMS.filter((i) => !i.optional || (ipvsDiag.value && i.key in ipvsDiag.value)))
+const syncDaemonText = computed(() => {
+  const d = ipvsDiag.value?.sync_daemon
+  if (!d) return null
+  return { master: 'master sync daemon (this host directs)', backup: 'backup sync daemon (this host is a standby)',
+    both: 'master and backup sync daemons', none: 'no IPVS sync daemon: keepalived has not started it yet' }[d] || d
+})
 // One hint for "no virtual server programmed", in the contract's priority order.
 const ipvsHint = computed(() => {
   const d = ipvsDiag.value
@@ -448,7 +466,10 @@ onMounted(load)
               </template>
               <span v-else class="muted">no backends in zone</span>
             </td>
-            <td>{{ qpsOf(lb) == null ? '—' : fixed(qpsOf(lb)) }}</td>
+            <td>
+              <span v-if="ipvsStandby(lb)" class="muted" title="A standby director schedules nothing; the VIP owner's row carries the zone's traffic">standby</span>
+              <template v-else>{{ qpsOf(lb) == null ? '—' : fixed(qpsOf(lb)) }}</template>
+            </td>
             <td>
               <span v-if="lb.in_sync" class="badge synced">In sync</span>
               <span v-else class="badge drift">Drift</span>
@@ -575,6 +596,7 @@ onMounted(load)
         <div v-if="isIpvs(selected)" class="hint" style="padding:10px 16px">
           Share is each backend's part of the packets the kernel has forwarded since the virtual server was programmed.
           Replies go straight from the backend to the client, so there are no out-direction counters.
+          <strong v-if="detailIpvs?.director === false">This host is a standby and schedules nothing; its numbers date from its last spell as VIP owner.</strong>
           <strong>Drain</strong> sets the backend's IPVS weight to 0; a keepalived check transition can restore it, and the agent re-applies the drain every 30 s.
         </div>
         <div v-else class="hint" style="padding:10px 16px">
@@ -596,15 +618,22 @@ onMounted(load)
               <span v-else-if="detailKeepalived" class="badge offline">standby</span>
               <span v-else class="muted">no data</span>
             </div></div>
+            <div><div class="k">Director</div><div class="v">
+              <span v-if="detailIpvs?.director === true" class="badge synced">active</span>
+              <span v-else-if="detailIpvs?.director === false" class="badge offline" title="VIP packets reaching this host go to its own AdGuard, as on any backend">standby</span>
+              <span v-else class="muted">no data</span>
+            </div></div>
             <div><div class="k">Interface</div><div class="v mono" style="font-weight:500">{{ detailKeepalived?.interface || selected.vip_interface || 'auto' }}</div></div>
             <div><div class="k">Scheduler</div><div class="v">{{ ALGOS.find((a) => a.value === selected.ipvs_algo)?.label.split(' (')[0] || selected.ipvs_algo }}</div></div>
             <div><div class="k">Backends up</div><div class="v">{{ upCount(selected) }} of {{ backendsOf(selected).length }}</div></div>
             <div><div class="k">keepalived</div><div class="v mono" style="font-weight:500">{{ detailKeepalived?.version || '—' }}</div></div>
           </div>
           <div v-if="ipvsDiag" class="diag-list">
-            <div v-for="item in DIAG_ITEMS" :key="item.key" class="diag-item" :class="ipvsDiag[item.key] ? 'ok' : 'bad'">
+            <div v-for="item in diagItems" :key="item.key" class="diag-item" :class="ipvsDiag[item.key] ? 'ok' : 'bad'">
               <span class="diag-mark">{{ ipvsDiag[item.key] ? '✓' : '✗' }}</span>{{ item.label }}
             </div>
+            <div v-if="syncDaemonText" class="diag-item info"><span class="diag-mark">i</span>{{ syncDaemonText }}</div>
+            <div v-if="ipvsDiag.sysctl_error" class="hint" style="color:var(--red);margin-top:4px">sysctl: {{ ipvsDiag.sysctl_error }}</div>
             <div v-if="ipvsDiag.container" class="diag-item info">
               <span class="diag-mark">i</span>runs inside a {{ ipvsDiag.container }} container (kernel modules come from the node)
             </div>

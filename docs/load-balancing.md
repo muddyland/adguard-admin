@@ -188,6 +188,23 @@ everyone.
   Host networking also drops the userland proxy that loopback-published ports
   need. AdGuard's listen addresses are managed in its configuration file
   instead, exactly as on a native install.
+- **Only the VIP owner directs; standbys are plain backends.** Every
+  director holds the same IPVS table, so a standby would otherwise
+  re-schedule the packets the owner direct-routes to it, and the two kernels
+  would bounce each query between them until its TTL ran out (with three
+  directors about half of all queries timed out, and phones that give up on a
+  resolver after a few timeouts lost DNS for a minute at a time). The agent
+  therefore adds `lvs_sync_daemon` to the keepalived config, which runs the
+  IPVS master sync daemon on the owner and the backup daemon on each standby,
+  and sets `net.ipv4.vs.backup_only=1` (persisted in
+  `/etc/sysctl.d/91-adguard-admin-ipvs-director.conf`): while the backup
+  daemon runs the kernel skips IPVS and hands VIP packets to the local
+  AdGuard. The balancer detail shows **Director: active** on the owner and
+  **standby** elsewhere, the standby's row shows "standby" in place of a QPS,
+  and the Dashboard's VIP tile reads the owner's counters. The sync daemon
+  uses multicast 224.0.0.81 port 8848 on the VIP interface; it only needs to
+  *run* for the standby to stand down, so a bridge that drops multicast
+  costs connection sync on failover, nothing more.
 - **Unprivileged containers cannot be IPVS directors.** Writing the IPVS
   table needs `CAP_NET_ADMIN` in the host's own namespace, which an
   unprivileged container's root never has; keepalived logs
