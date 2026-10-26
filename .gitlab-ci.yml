@@ -34,7 +34,9 @@ variables:
   # docker:28.6.0 on Docker Hub -- the 28 line stops at 28.3.3 -- so a
   # previous pin failed at image pull, not at anything in the build.
   DOCKER_IMAGE: "docker:29.8.2"
-  GO_IMAGE: "golang:1.24-alpine"
+  # Same Go as the Dockerfile's agent stage. 1.24 is out of support, so its
+  # stdlib CVEs never get fixed there; go.mod still says 1.24 as the minimum.
+  GO_IMAGE: "golang:1.26-alpine"
   # Set USE_DHI to "true" to build the runtime image on a Docker Hardened Image
   # (no shell, no package manager) instead of python:3.14-slim. Off by default,
   # so the public mirror builds on slim. DHI_PYTHON_IMAGE is the repository

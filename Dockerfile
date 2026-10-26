@@ -43,7 +43,9 @@ RUN npm run build
 # ---- Stage 2: build the host agent for every architecture we provision ----
 # One static binary per arch; the control plane serves them to the install
 # one-liner together with a checksum manifest (/api/agents/download/...).
-FROM golang:1.24-alpine AS agent
+# The stdlib is linked into each binary, so the Go here decides which Go CVEs
+# the agents carry. Keep it on a supported release, in step with GO_IMAGE in CI.
+FROM golang:1.26-alpine AS agent
 ARG AGENT_VERSION=dev
 WORKDIR /src
 ENV CGO_ENABLED=0 GOFLAGS=-buildvcs=false

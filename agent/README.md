@@ -6,7 +6,7 @@ it implements is [docs/design/agent-api.md](../docs/design/agent-api.md).
 
 ## Build
 
-Go 1.24. Only dependency: `gopkg.in/yaml.v3` (AdGuardHome.yaml edits).
+Go 1.24 or newer (the image and CI build with 1.26). Only dependency: `gopkg.in/yaml.v3` (AdGuardHome.yaml edits).
 
 ```sh
 cd agent
